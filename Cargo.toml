@@ -9,7 +9,7 @@ description = "Exact-integer rational time types for media pipelines — FFmpeg-
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 keywords = ["media", "timebase", "timestamp", "pts", "ffmpeg"]
-categories = ["multimedia", "multimedia::video", "date-and-time", "no-std"]
+categories = ["multimedia", "multimedia::video", "date-and-time", "no-std", "no-std::no-alloc"]
 
 [[bench]]
 path = "benches/gcd.rs"

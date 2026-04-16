@@ -1,5 +1,0 @@
-# Tarpaulin configuration — picked up automatically when tarpaulin runs in
-# this directory. Keeps the coverage report focused on the library itself;
-# criterion bench files are full of harness code that tests never enter.
-[default]
-exclude-files = ["benches/*"]
