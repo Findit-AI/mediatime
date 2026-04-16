@@ -1,23 +1,23 @@
 [package]
-name = "template-rs"
-version = "0.0.0"
-edition = "2021"
-repository = "https://github.com/al8n/template-rs"
-homepage = "https://github.com/al8n/template-rs"
-documentation = "https://docs.rs/template-rs"
-description = "A template for creating Rust open-source repo on GitHub"
+name = "mediatime"
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/al8n/mediatime"
+homepage = "https://github.com/al8n/mediatime"
+documentation = "https://docs.rs/mediatime"
+description = "Exact-integer rational time types for media pipelines — FFmpeg-style Timebase, Timestamp, and TimeRange. no_std, zero dependencies, const fn."
 license = "MIT OR Apache-2.0"
-rust-version = "1.73"
+rust-version = "1.85"
+keywords = ["media", "timebase", "timestamp", "pts", "ffmpeg"]
+categories = ["multimedia", "multimedia::video", "date-and-time", "no-std"]
 
 [[bench]]
-path = "benches/foo.rs"
-name = "foo"
+path = "benches/gcd.rs"
+name = "gcd"
 harness = false
 
 [features]
-default = ["std"]
-alloc = []
-std = []
+default = []
 
 [dependencies]
 
