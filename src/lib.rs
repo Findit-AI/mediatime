@@ -80,7 +80,10 @@ impl Timebase {
   /// Rescales `pts` from timebase `from` to timebase `to`, rounding toward zero.
   ///
   /// Equivalent to FFmpeg's `av_rescale_q`. Uses a 128-bit intermediate to
-  /// avoid overflow for typical video PTS ranges.
+  /// avoid overflow for typical video PTS ranges. If the rescaled value
+  /// exceeds `i64`'s range (pathological for real video), the result is
+  /// **saturated** to `i64::MIN` or `i64::MAX` — this matches the behavior
+  /// promised by `duration_to_pts` and avoids silent wraparound.
   ///
   /// # Panics
   ///
@@ -91,7 +94,14 @@ impl Timebase {
     // = pts * from.num * to.den / (from.den * to.num)
     let numerator = (pts as i128) * (from.num as i128) * (to.den.get() as i128);
     let denominator = (from.den.get() as i128) * (to.num as i128);
-    (numerator / denominator) as i64
+    let q = numerator / denominator;
+    if q > i64::MAX as i128 {
+      i64::MAX
+    } else if q < i64::MIN as i128 {
+      i64::MIN
+    } else {
+      q as i64
+    }
   }
 
   /// Rescales `pts` from this timebase to `to`, rounding toward zero.
@@ -305,8 +315,9 @@ impl Timestamp {
   /// `earlier` is after `self`.
   ///
   /// Works across different timebases. Computes the difference in nanoseconds
-  /// via 128-bit intermediates; for realistic video PTS ranges this is exact,
-  /// but pathological inputs may saturate.
+  /// via 128-bit intermediates; for realistic video PTS ranges this is exact.
+  /// If the result would exceed `Duration::MAX` (pathological: seconds don't
+  /// fit in `u64`), saturates to `Duration::MAX` rather than wrapping.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn duration_since(&self, earlier: &Self) -> Option<Duration> {
     // nanos = pts * tb.num * 1_000_000_000 / tb.den
@@ -319,7 +330,11 @@ impl Timestamp {
     if diff < 0 {
       return None;
     }
-    let secs = (diff / NS_PER_SEC) as u64;
+    let secs_i128 = diff / NS_PER_SEC;
+    if secs_i128 > u64::MAX as i128 {
+      return Some(Duration::MAX);
+    }
+    let secs = secs_i128 as u64;
     let nanos = (diff % NS_PER_SEC) as u32;
     Some(Duration::new(secs, nanos))
   }
@@ -547,6 +562,18 @@ mod tests {
   }
 
   #[test]
+  fn rescale_saturates_on_i64_overflow() {
+    // Rescale from a coarse timebase (u32::MAX seconds per tick) to a fine
+    // one (1/u32::MAX seconds per tick): even a modest pts blows past
+    // i64::MAX in the 128-bit intermediate. `rescale_pts` should saturate
+    // to i64::MAX / i64::MIN rather than wrap via `as i64`.
+    let from = Timebase::new(u32::MAX, nz(1));
+    let to = Timebase::new(1, nz(u32::MAX));
+    assert_eq!(from.rescale(1_000_000, to), i64::MAX);
+    assert_eq!(from.rescale(-1_000_000, to), i64::MIN);
+  }
+
+  #[test]
   fn timebase_eq_is_semantic() {
     // 1/2 == 2/4 == 3/6
     let a = Timebase::new(1, nz(2));
@@ -659,6 +686,17 @@ mod tests {
     let a = Timestamp::new(1000, Timebase::new(1, nz(1000)));
     let b = Timestamp::new(45_000, Timebase::new(1, nz(90_000)));
     assert_eq!(a.duration_since(&b), Some(Duration::from_millis(500)));
+  }
+
+  #[test]
+  fn duration_since_saturates_to_duration_max_on_overflow() {
+    // Use a timebase of `u32::MAX / 1` (each tick ≈ 2^32 seconds). Then
+    // i64::MAX ticks ≈ 2^95 seconds — far more than u64::MAX. Should
+    // saturate to Duration::MAX rather than wrap when casting seconds to u64.
+    let tb = Timebase::new(u32::MAX, nz(1));
+    let huge = Timestamp::new(i64::MAX, tb);
+    let zero = Timestamp::new(0, tb);
+    assert_eq!(huge.duration_since(&zero), Some(Duration::MAX));
   }
 
   #[test]

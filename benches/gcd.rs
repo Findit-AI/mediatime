@@ -1,7 +1,10 @@
-//! Criterion benchmark for the three private GCD helpers used by
-//! `Timebase::hash` and `Timestamp::hash`. The functions are copied inline
-//! below so the bench doesn't need to expose the private helpers from the
-//! crate — keep them bit-identical to `src/lib.rs`.
+//! Criterion benchmark comparing GCD strategies for the two private helpers
+//! (`gcd_u32`, `gcd_u128`) used by `Timebase::hash` and `Timestamp::hash`.
+//! The Euclidean variants are copied inline from `src/lib.rs` (keep them
+//! bit-identical) so the bench doesn't need to expose the private helpers.
+//! Two additional binary-GCD (Stein's algorithm) variants are defined here
+//! only — they live in the bench rather than the library because the
+//! Euclidean versions benchmark faster on every realistic input we measured.
 //!
 //! Run with `cargo bench --bench gcd`.
 
