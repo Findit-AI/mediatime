@@ -13,7 +13,7 @@ use std::hint::black_box;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 // ---------------------------------------------------------------------------
-// Copies of the three GCD implementations from src/lib.rs. Keep in sync.
+// Copies of the two Euclidean GCD helpers from src/lib.rs. Keep in sync.
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
