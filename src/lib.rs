@@ -24,7 +24,7 @@ use core::{
 /// [`Hash`] hashes the reduced (lowest-terms) form, so equal rationals hash
 /// the same. Cross-multiplication uses `u64` intermediates — exact for any
 /// `u32` numerator / denominator.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq)]
 pub struct Timebase {
   num: u32,
   den: NonZeroU32,
@@ -175,7 +175,6 @@ impl PartialEq for Timebase {
     (self.num as u64) * (other.den.get() as u64) == (other.num as u64) * (self.den.get() as u64)
   }
 }
-impl Eq for Timebase {}
 
 impl Hash for Timebase {
   fn hash<H: Hasher>(&self, state: &mut H) {
@@ -195,6 +194,7 @@ impl Ord for Timebase {
     lhs.cmp(&rhs)
   }
 }
+
 impl PartialOrd for Timebase {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
