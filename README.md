@@ -48,7 +48,7 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 - **Hash agrees with Eq.** Hashes the reduced-form rational, so equal rationals hash identically and you can use these types as `HashMap` keys.
 - **FFmpeg-style utilities.** `rescale_pts` (a.k.a. `av_rescale_q`), `frames_to_duration`, `duration_to_pts`, `duration_since`, `saturating_sub_duration`.
 - **`TimeRange` interpolation.** Linear midpoint (`interpolate(t)`) for placing an event somewhere between fade-out and fade-in frames, with `t ∈ [0, 1]` clamped.
-- **`no_std` + `no_alloc`.** Builds and tests without `std` and `alloc`.
+- **`no_std` + `no_alloc` library.** The library builds without `std` and `alloc`; tests use `std`.
 - **`const fn` throughout.** Build `Timebase` / `Timestamp` / `TimeRange` in `const` context.
 
 ## Example

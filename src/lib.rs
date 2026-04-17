@@ -90,6 +90,7 @@ impl Timebase {
   /// Panics if `to.num() == 0` (division by zero).
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn rescale_pts(pts: i64, from: Self, to: Self) -> i64 {
+    assert!(to.num != 0, "target timebase numerator must be non-zero");
     // pts * (from.num / from.den) / (to.num / to.den)
     // = pts * from.num * to.den / (from.den * to.num)
     let numerator = (pts as i128) * (from.num as i128) * (to.den.get() as i128);
@@ -314,29 +315,48 @@ impl Timestamp {
   /// Returns the elapsed [`Duration`] from `earlier` to `self`, or `None` if
   /// `earlier` is after `self`.
   ///
-  /// Works across different timebases. Computes the difference in nanoseconds
-  /// via 128-bit intermediates; for realistic video PTS ranges this is exact.
+  /// Works across different timebases. Computes the exact rational difference
+  /// first using a common denominator, then truncates once when converting to
+  /// nanoseconds for the returned [`Duration`].
   /// If the result would exceed `Duration::MAX` (pathological: seconds don't
   /// fit in `u64`), saturates to `Duration::MAX` rather than wrapping.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn duration_since(&self, earlier: &Self) -> Option<Duration> {
-    // nanos = pts * tb.num * 1_000_000_000 / tb.den
     const NS_PER_SEC: i128 = 1_000_000_000;
-    let self_ns = (self.pts as i128) * (self.timebase.num as i128) * NS_PER_SEC
-      / (self.timebase.den.get() as i128);
-    let earlier_ns = (earlier.pts as i128) * (earlier.timebase.num as i128) * NS_PER_SEC
-      / (earlier.timebase.den.get() as i128);
-    let diff = self_ns - earlier_ns;
-    if diff < 0 {
+
+    // Compute LCM of the two denominators via GCD so we can subtract in a
+    // common timebase without per-endpoint truncation.
+    let self_den = self.timebase.den.get();
+    let earlier_den = earlier.timebase.den.get();
+
+    let mut a = self_den;
+    let mut b = earlier_den;
+    while b != 0 {
+      let r = a % b;
+      a = b;
+      b = r;
+    }
+    let gcd = a as i128;
+
+    let self_scale = (earlier_den as i128) / gcd;
+    let earlier_scale = (self_den as i128) / gcd;
+    let common_den = (self_den as i128) * self_scale; // = lcm(self_den, earlier_den)
+
+    // Exact rational difference in units of 1/common_den seconds.
+    let diff_num = (self.pts as i128) * (self.timebase.num as i128) * self_scale
+      - (earlier.pts as i128) * (earlier.timebase.num as i128) * earlier_scale;
+    if diff_num < 0 {
       return None;
     }
-    let secs_i128 = diff / NS_PER_SEC;
+
+    // Single truncation: convert to whole seconds + nanosecond remainder.
+    let secs_i128 = diff_num / common_den;
     if secs_i128 > u64::MAX as i128 {
       return Some(Duration::MAX);
     }
-    let secs = secs_i128 as u64;
-    let nanos = (diff % NS_PER_SEC) as u32;
-    Some(Duration::new(secs, nanos))
+    let rem = diff_num % common_den;
+    let nanos = (rem * NS_PER_SEC / common_den) as u32;
+    Some(Duration::new(secs_i128 as u64, nanos))
   }
 }
 
