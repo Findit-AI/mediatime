@@ -549,6 +549,104 @@ const fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
   a
 }
 
+#[cfg(feature = "quickcheck")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quickcheck")))]
+const _: () = {
+  use quickcheck::{Arbitrary, Gen};
+
+  impl Arbitrary for Timebase {
+    fn arbitrary(g: &mut Gen) -> Self {
+      // Generate a random non-zero denominator
+      let den = loop {
+        let d = u32::arbitrary(g);
+        if d != 0 {
+          break d;
+        }
+      };
+      let num = u32::arbitrary(g);
+      Timebase::new(
+        num,
+        NonZeroU32::new(den).expect("we have checked den is not zero"),
+      )
+    }
+  }
+
+  impl Arbitrary for Timestamp {
+    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+      Timestamp::new(non_negative_i64(g), Timebase::arbitrary(g))
+    }
+  }
+
+  impl Arbitrary for TimeRange {
+    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+      let a = non_negative_i64(g);
+      let b = non_negative_i64(g);
+      let start = a.min(b);
+      let mut end = a.max(b);
+
+      if start == end {
+        end = end.saturating_add(1);
+      }
+
+      TimeRange::new(start, end, Timebase::arbitrary(g))
+    }
+  }
+
+  fn non_negative_i64(g: &mut quickcheck::Gen) -> i64 {
+    loop {
+      let d = i64::arbitrary(g);
+      if d >= 0 {
+        return d;
+      }
+    }
+  }
+};
+
+#[cfg(feature = "arbitrary")]
+#[cfg_attr(docsrs, doc(cfg(feature = "arbitrary")))]
+const _: () = {
+  use arbitrary::Arbitrary;
+
+  impl<'a> Arbitrary<'a> for Timebase {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+      // Generate a random non-zero denominator
+      let d = u.arbitrary::<core::num::NonZeroU32>()?;
+      let num = u.arbitrary::<u32>()?;
+      Ok(Timebase::new(num, d))
+    }
+  }
+
+  impl<'a> Arbitrary<'a> for Timestamp {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+      non_negative_i64(u).and_then(|i| u.arbitrary().map(|tb| Self::new(i, tb)))
+    }
+  }
+
+  impl<'a> Arbitrary<'a> for TimeRange {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+      let a = non_negative_i64(u)?;
+      let b = non_negative_i64(u)?;
+      let start = a.min(b);
+      let mut end = a.max(b);
+
+      if start == end {
+        end = end.saturating_add(1);
+      }
+
+      Ok(TimeRange::new(start, end, u.arbitrary()?))
+    }
+  }
+
+  fn non_negative_i64(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<i64> {
+    loop {
+      let val = u.arbitrary::<i64>()?;
+      if val >= 0 {
+        return Ok(val);
+      }
+    }
+  }
+};
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -902,5 +1000,118 @@ mod tests {
     // Reversed range: end before start means duration() is None.
     let reversed = TimeRange::new(500, 100, tb);
     assert!(reversed.duration().is_none());
+  }
+}
+
+#[cfg(all(test, feature = "quickcheck"))]
+mod quickcheck_arbitrary_tests {
+  use super::*;
+  use quickcheck::{Arbitrary, Gen};
+
+  const ITERATIONS: usize = 1000;
+  const SIZE: usize = 512;
+
+  #[test]
+  fn timebase_denominator_is_nonzero() {
+    let mut g = Gen::new(SIZE);
+    for _ in 0..ITERATIONS {
+      let tb = Timebase::arbitrary(&mut g);
+      assert!(tb.den().get() != 0);
+    }
+  }
+
+  #[test]
+  fn timestamp_pts_is_non_negative() {
+    let mut g = Gen::new(SIZE);
+    for _ in 0..ITERATIONS {
+      let ts = Timestamp::arbitrary(&mut g);
+      assert!(ts.pts() >= 0, "pts was {}", ts.pts());
+      assert!(ts.timebase().den().get() != 0);
+    }
+  }
+
+  #[test]
+  fn timerange_is_well_formed() {
+    let mut g = Gen::new(SIZE);
+    for _ in 0..ITERATIONS {
+      let r = TimeRange::arbitrary(&mut g);
+      assert!(r.start_pts() >= 0, "start was {}", r.start_pts());
+      assert!(r.end_pts() >= 0, "end was {}", r.end_pts());
+      assert!(
+        r.start_pts() <= r.end_pts(),
+        "start {} > end {}",
+        r.start_pts(),
+        r.end_pts()
+      );
+      assert!(r.timebase().den().get() != 0);
+    }
+  }
+}
+
+#[cfg(all(test, feature = "arbitrary"))]
+mod arbitrary_impl_tests {
+  use super::*;
+  use arbitrary::{Arbitrary, Unstructured};
+
+  fn pseudo_random_bytes(seed: u64) -> [u8; 4096] {
+    // splitmix64: simple, reproducible, good enough for fuzz-input fodder.
+    let mut out = [0u8; 4096];
+    let mut s = seed.wrapping_add(0x9E3779B97F4A7C15);
+    for chunk in out.chunks_mut(8) {
+      s = s.wrapping_mul(0xBF58476D1CE4E5B9).wrapping_add(1);
+      let mut z = s;
+      z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+      z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+      z ^= z >> 31;
+      chunk.copy_from_slice(&z.to_le_bytes()[..chunk.len()]);
+    }
+    out
+  }
+
+  #[test]
+  fn timebase_denominator_is_nonzero() {
+    for seed in 0..200 {
+      let data = pseudo_random_bytes(seed);
+      let mut u = Unstructured::new(&data);
+      let tb = Timebase::arbitrary(&mut u).expect("enough bytes to build a Timebase");
+      assert!(tb.den().get() != 0);
+    }
+  }
+
+  #[test]
+  fn timestamp_pts_is_non_negative() {
+    for seed in 0..200 {
+      let data = pseudo_random_bytes(seed);
+      let mut u = Unstructured::new(&data);
+      let ts = Timestamp::arbitrary(&mut u).expect("enough bytes to build a Timestamp");
+      assert!(ts.pts() >= 0, "pts was {}", ts.pts());
+      assert!(ts.timebase().den().get() != 0);
+    }
+  }
+
+  #[test]
+  fn timerange_is_well_formed() {
+    for seed in 0..200 {
+      let data = pseudo_random_bytes(seed);
+      let mut u = Unstructured::new(&data);
+      let r = TimeRange::arbitrary(&mut u).expect("enough bytes to build a TimeRange");
+      assert!(r.start_pts() >= 0);
+      assert!(r.end_pts() >= 0);
+      assert!(r.start_pts() <= r.end_pts());
+      assert!(r.timebase().den().get() != 0);
+    }
+  }
+
+  #[test]
+  fn arbitrary_take_rest_produces_valid_values() {
+    // `arbitrary_take_rest` is the entry point fuzzers use at the tail of
+    // a corpus entry. Make sure our impl plays well with it.
+    let data = pseudo_random_bytes(42);
+    let u = Unstructured::new(&data);
+    let r = TimeRange::arbitrary_take_rest(u).expect("should consume the buffer");
+    assert!(r.start_pts() >= 0);
+    assert!(r.end_pts() >= 0);
+    assert!(r.start_pts() <= r.end_pts());
+    assert!(r.timebase().den().get() != 0);
   }
 }

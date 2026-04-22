@@ -126,7 +126,7 @@ jobs:
     - name: Install cargo-hack
       run: cargo install cargo-hack
     - name: Run build
-      run: cargo hack build --feature-powerset
+      run: cargo hack build --each-feature
 
   test:
     name: test
@@ -155,7 +155,7 @@ jobs:
     - name: Install cargo-hack
       run: cargo install cargo-hack
     - name: Run test
-      run: cargo hack test --feature-powerset
+      run: cargo hack test --each-feature
 
   coverage:
     name: coverage
@@ -185,7 +185,7 @@ jobs:
       - name: Run tarpaulin
         env:
           RUSTFLAGS: "--cfg tarpaulin"
-        run: cargo tarpaulin --all-features --run-types tests --run-types doctests --workspace --out xml
+        run: cargo tarpaulin --engine llvm --all-features --lib --run-types tests --run-types doctests --workspace --out xml
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v6
         with:
