@@ -36,6 +36,13 @@ pub struct Timebase {
   den: NonZeroU32,
 }
 
+impl Default for Timebase {
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn default() -> Self {
+    Self::new(1, NonZeroU32::new(1).unwrap())
+  }
+}
+
 impl Timebase {
   /// Creates a new `Timebase` with the given numerator and non-zero denominator.
   #[cfg_attr(not(tarpaulin), inline(always))]
@@ -220,7 +227,7 @@ impl PartialOrd for Timebase {
 ///
 /// Cross-timebase comparisons use 128-bit cross-multiplication — no division,
 /// no rounding error. Same-timebase comparisons take a fast path on `pts`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Timestamp {
   pts: i64,
@@ -320,6 +327,16 @@ impl Timestamp {
     }
   }
 
+  /// Returns the [`Duration`] from PTS zero (in this timebase) to `self`, or
+  /// `None` if `self.pts() < 0` (pre-roll / edit-list cases can produce
+  /// negative PTS, which has no [`Duration`] representation).
+  ///
+  /// Equivalent to `self.duration_since(&Timestamp::new(0, self.timebase()))`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn duration(&self) -> Option<Duration> {
+    self.duration_since(&Self::new(0, self.timebase))
+  }
+
   /// Returns the elapsed [`Duration`] from `earlier` to `self`, or `None` if
   /// `earlier` is after `self`.
   ///
@@ -414,7 +431,7 @@ impl PartialOrd for Timestamp {
 /// Both endpoints share the same [`Timebase`]. To compare ranges across
 /// different timebases, rescale one of them first (e.g., by calling
 /// [`Timestamp::rescale_to`] on each endpoint).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TimeRange {
   start: i64,
@@ -424,12 +441,33 @@ pub struct TimeRange {
 
 impl TimeRange {
   /// Creates a new `TimeRange` with the given start/end PTS and shared timebase.
+  ///
+  /// # Panics
+  ///
+  /// - Panics if `end < start` (negative duration).
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn new(start: i64, end: i64, timebase: Timebase) -> Self {
+    assert!(start <= end, "end must not be greater or equal to start");
+
     Self {
       start,
       end,
       timebase,
+    }
+  }
+
+  /// Fallible variant of [`Self::new`]: returns `None` if `end < start`
+  /// instead of panicking. Accepts `start == end` (degenerate instant range).
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn try_new(start: i64, end: i64, timebase: Timebase) -> Option<Self> {
+    if start <= end {
+      Some(Self {
+        start,
+        end,
+        timebase,
+      })
+    } else {
+      None
     }
   }
 
@@ -501,17 +539,58 @@ impl TimeRange {
     self
   }
 
+  /// Sets the shared timebase.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn with_timebase(mut self, timebase: Timebase) -> Self {
+    self.set_timebase(timebase);
+    self
+  }
+
+  /// Sets the shared timebase in place.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn set_timebase(&mut self, timebase: Timebase) -> &mut Self {
+    self.timebase = timebase;
+    self
+  }
+
   /// Returns `true` if `start == end` (a degenerate instant range).
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn is_instant(&self) -> bool {
     self.start == self.end
   }
 
+  /// Returns the span in PTS units (`end - start`) in this timebase.
+  ///
+  /// Always non-negative given the `start <= end` constructor invariant.
+  /// Saturates at `i64::MAX` in the pathological case where `end - start`
+  /// would overflow `i64` (e.g., `start = i64::MIN`, `end = i64::MAX`).
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn total_pts(&self) -> i64 {
+    self.end.saturating_sub(self.start)
+  }
+
   /// Returns the elapsed [`Duration`] from `start` to `end`, or `None` if
   /// `end` is before `start`.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn duration(&self) -> Option<Duration> {
-    self.end().duration_since(&self.start())
+  pub const fn duration(&self) -> Duration {
+    self
+      .end()
+      .duration_since(&self.start())
+      .expect("end must greater than or equal to start")
+  }
+
+  /// Returns a new `TimeRange` representing the same span in a different timebase.
+  ///
+  /// Rescales both endpoints via [`Timebase::rescale_pts`] (rounds toward zero);
+  /// round-tripping through a coarser timebase can lose precision. Because
+  /// rescaling is monotonic, the `start <= end` invariant is preserved.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn rescale_to(self, target: Timebase) -> Self {
+    Self {
+      start: self.timebase.rescale(self.start, target),
+      end: self.timebase.rescale(self.end, target),
+      timebase: target,
+    }
   }
 
   /// Linearly interpolates between `start` and `end`: `t = 0.0` returns
@@ -801,6 +880,24 @@ mod tests {
   }
 
   #[test]
+  fn timestamp_duration_from_zero() {
+    let ms = Timebase::new(1, nz(1000));
+    let ts = Timestamp::new(1500, ms);
+    assert_eq!(ts.duration(), Some(Duration::from_millis(1500)));
+    assert_eq!(Timestamp::new(0, ms).duration(), Some(Duration::ZERO));
+
+    // Cross-timebase equivalence: same instant, same duration.
+    let mpeg = Timebase::new(1, nz(90_000));
+    assert_eq!(
+      Timestamp::new(90_000, mpeg).duration(),
+      Some(Duration::from_secs(1))
+    );
+
+    // Negative PTS (pre-roll) has no Duration representation.
+    assert_eq!(Timestamp::new(-1, ms).duration(), None);
+  }
+
+  #[test]
   fn duration_since_same_timebase() {
     let tb = Timebase::new(1, nz(1000));
     let a = Timestamp::new(1500, tb);
@@ -849,7 +946,7 @@ mod tests {
 
   #[test]
   fn time_range_basic() {
-    let tb = Timebase::new(1, nz(1000));
+    let tb = Timebase::default().with_den(nz(1000)).with_num(1);
     let r = TimeRange::new(100, 500, tb);
     assert_eq!(r.start_pts(), 100);
     assert_eq!(r.end_pts(), 500);
@@ -857,7 +954,7 @@ mod tests {
     assert_eq!(r.start(), Timestamp::new(100, tb));
     assert_eq!(r.end(), Timestamp::new(500, tb));
     assert!(!r.is_instant());
-    assert_eq!(r.duration(), Some(Duration::from_millis(400)));
+    assert_eq!(r.duration(), Duration::from_millis(400));
     // Interpolate: t=0 → start, t=1 → end, t=0.5 → midpoint.
     assert_eq!(r.interpolate(0.0).pts(), 100);
     assert_eq!(r.interpolate(1.0).pts(), 500);
@@ -865,6 +962,10 @@ mod tests {
     // Out-of-range t is clamped.
     assert_eq!(r.interpolate(-1.0).pts(), 100);
     assert_eq!(r.interpolate(2.0).pts(), 500);
+
+    let nr = r.with_timebase(Timebase::new(1, nz(2000)));
+    assert_eq!(nr.timebase().den().get(), 2000);
+    assert_eq!(nr.timebase().num(), 1);
   }
 
   #[test]
@@ -875,7 +976,7 @@ mod tests {
     assert!(r.is_instant());
     assert_eq!(r.start_pts(), 123);
     assert_eq!(r.end_pts(), 123);
-    assert_eq!(r.duration(), Some(Duration::ZERO));
+    assert_eq!(r.duration(), Duration::ZERO);
   }
 
   // -------------------------------------------------------------------------
@@ -996,10 +1097,51 @@ mod tests {
     r3.set_start(10).set_end(20);
     assert_eq!(r3.start_pts(), 10);
     assert_eq!(r3.end_pts(), 20);
+  }
 
-    // Reversed range: end before start means duration() is None.
-    let reversed = TimeRange::new(500, 100, tb);
-    assert!(reversed.duration().is_none());
+  #[test]
+  fn time_range_total_pts() {
+    let tb = Timebase::new(1, nz(1000));
+    assert_eq!(TimeRange::new(100, 500, tb).total_pts(), 400);
+    assert_eq!(TimeRange::new(0, 0, tb).total_pts(), 0);
+    // Saturating: i64::MIN..i64::MAX would overflow a signed subtract.
+    assert_eq!(TimeRange::new(i64::MIN, i64::MAX, tb).total_pts(), i64::MAX);
+  }
+
+  #[test]
+  fn time_range_rescale_to() {
+    let ms = Timebase::new(1, nz(1000));
+    let mpeg = Timebase::new(1, nz(90_000));
+    let r = TimeRange::new(1000, 2000, ms);
+    let r2 = r.rescale_to(mpeg);
+    assert_eq!(r2.start_pts(), 90_000);
+    assert_eq!(r2.end_pts(), 180_000);
+    assert_eq!(r2.timebase(), mpeg);
+    // Same span in Duration terms.
+    assert_eq!(r.duration(), r2.duration());
+    // Instant range stays instant.
+    let inst = TimeRange::instant(Timestamp::new(500, ms));
+    assert!(inst.rescale_to(mpeg).is_instant());
+  }
+
+  #[test]
+  fn time_range_try_new() {
+    let tb = Timebase::new(1, nz(1000));
+    // Forward range: Some.
+    let r = TimeRange::try_new(100, 500, tb).unwrap();
+    assert_eq!(r.start_pts(), 100);
+    assert_eq!(r.end_pts(), 500);
+    // Degenerate instant: allowed.
+    assert!(TimeRange::try_new(42, 42, tb).is_some());
+    // Inverted range: None instead of panic.
+    assert!(TimeRange::try_new(500, 100, tb).is_none());
+  }
+
+  #[test]
+  #[should_panic]
+  fn time_range_new_panics_on_negative_duration() {
+    let tb = Timebase::new(1, nz(1000));
+    TimeRange::new(500, 100, tb);
   }
 }
 

@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.5] — April 23, 2026
+
+### Added
+
+- `Timestamp::duration() -> Option<Duration>` — [`Duration`] from PTS zero in
+  the timestamp's own timebase. Returns `None` for negative PTS (pre-roll /
+  edit-list cases that have no [`Duration`] representation).
+- `TimeRange::rescale_to(target: Timebase) -> Self` — rescales both endpoints
+  to a new timebase (parallel to `Timestamp::rescale_to`). Monotonic, so the
+  `start <= end` invariant is preserved.
+- `TimeRange::total_pts() -> i64` — span in PTS units (`end - start`);
+  saturates at `i64::MAX` for pathological `i64::MIN..i64::MAX` inputs.
+- `TimeRange::try_new(start, end, timebase) -> Option<Self>` — fallible
+  counterpart to `TimeRange::new`; returns `None` instead of panicking when
+  `end < start`. Degenerate instant ranges (`start == end`) are accepted.
+
 ## [0.1.0] — April 17, 2026
 
 Initial public release. First-cut API — expect minor refinements before 1.0.

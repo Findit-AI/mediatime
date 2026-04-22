@@ -78,7 +78,7 @@ assert_eq!(ntsc.frames_to_duration(30_000), Duration::from_secs(1001));
 // A half-open [start, end) range with interpolation.
 let r = TimeRange::new(100, 500, ms);
 assert_eq!(r.interpolate(0.5).pts(), 300);
-assert_eq!(r.duration(), Some(Duration::from_millis(400)));
+assert_eq!(r.duration(), Duration::from_millis(400));
 ```
 
 ## Installation
