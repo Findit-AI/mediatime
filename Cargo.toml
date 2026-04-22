@@ -1,6 +1,6 @@
 [package]
 name = "mediatime"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 repository = "https://github.com/findit-ai/mediatime"
 homepage = "https://github.com/findit-ai/mediatime"
@@ -17,9 +17,12 @@ name = "gcd"
 harness = false
 
 [features]
-default = []
+default = ["std"]
+std = ["serde/default"]
+serde = ["dep:serde"]
 
 [dependencies]
+serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 criterion = "0.8"

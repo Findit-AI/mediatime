@@ -12,6 +12,9 @@ use core::{
   time::Duration,
 };
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 /// A media timebase represented as a rational number: numerator over non-zero denominator.
 ///
 /// Typical values: `1/1000` for millisecond PTS, `1/90000` for MPEG-TS,
@@ -25,8 +28,11 @@ use core::{
 /// the same. Cross-multiplication uses `u64` intermediates — exact for any
 /// `u32` numerator / denominator.
 #[derive(Debug, Clone, Copy, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Timebase {
+  #[cfg_attr(feature = "serde", serde(rename = "numerator"))]
   num: u32,
+  #[cfg_attr(feature = "serde", serde(rename = "denominator"))]
   den: NonZeroU32,
 }
 
@@ -177,6 +183,7 @@ impl PartialEq for Timebase {
 }
 
 impl Hash for Timebase {
+  #[cfg_attr(not(tarpaulin), inline(always))]
   fn hash<H: Hasher>(&self, state: &mut H) {
     let d = self.den.get();
     // gcd(num, d) ≥ 1 because d ≥ 1 (NonZeroU32).
@@ -214,6 +221,7 @@ impl PartialOrd for Timebase {
 /// Cross-timebase comparisons use 128-bit cross-multiplication — no division,
 /// no rounding error. Same-timebase comparisons take a fast path on `pts`.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Timestamp {
   pts: i64,
   timebase: Timebase,
@@ -389,6 +397,7 @@ impl Ord for Timestamp {
     self.cmp_semantic(other)
   }
 }
+
 impl PartialOrd for Timestamp {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -406,6 +415,7 @@ impl PartialOrd for Timestamp {
 /// different timebases, rescale one of them first (e.g., by calling
 /// [`Timestamp::rescale_to`] on each endpoint).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TimeRange {
   start: i64,
   end: i64,
