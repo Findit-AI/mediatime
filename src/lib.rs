@@ -456,6 +456,20 @@ impl TimeRange {
     }
   }
 
+  /// Bypass-invariant constructor used only by the `buffa` decode path.
+  ///
+  /// During protobuf field-by-field merging, intermediate states may
+  /// temporarily violate `start <= end` (e.g. `start` field arrives before
+  /// `end`, so the partially-decoded struct holds `start=100, end=0`).
+  /// The normal `new()` constructor panics in that case. This constructor
+  /// skips the assertion so decode can proceed; the final decoded value
+  /// is always consistent because the encoder never writes `start > end`.
+  #[cfg(feature = "buffa")]
+  #[inline(always)]
+  pub(crate) const fn new_for_decode(start: i64, end: i64, timebase: Timebase) -> Self {
+    Self { start, end, timebase }
+  }
+
   /// Fallible variant of [`Self::new`]: returns `None` if `end < start`
   /// instead of panicking. Accepts `start == end` (degenerate instant range).
   #[cfg_attr(not(tarpaulin), inline(always))]
@@ -1256,4 +1270,20 @@ mod arbitrary_impl_tests {
     assert!(r.start_pts() <= r.end_pts());
     assert!(r.timebase().den().get() != 0);
   }
+}
+
+#[cfg(feature = "buffa")]
+mod buffa_support;
+
+/// Ancillary module the buffa code generator looks for when an extern-mapped
+/// type is used as a message field with view generation enabled. The mediatime
+/// types contain only scalars, so each view is the owned type itself.
+#[cfg(feature = "buffa")]
+#[doc(hidden)]
+pub mod __buffa {
+    pub mod view {
+        pub type TimebaseView<'a> = crate::Timebase;
+        pub type TimeRangeView<'a> = crate::TimeRange;
+        pub type TimestampView<'a> = crate::Timestamp;
+    }
 }
