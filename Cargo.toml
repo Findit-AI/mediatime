@@ -1,6 +1,6 @@
 [package]
 name = "mediatime"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 repository = "https://github.com/findit-ai/mediatime"
 homepage = "https://github.com/findit-ai/mediatime"
@@ -23,12 +23,14 @@ std = ["serde?/default"]
 serde = ["dep:serde"]
 arbitrary = ["dep:arbitrary"]
 quickcheck = ["dep:quickcheck"]
+buffa = ["dep:buffa"]
 
 
 [dependencies]
 serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 arbitrary = { version = "1", optional = true, default-features = false }
 quickcheck = { version = "1", optional = true, default-features = false }
+buffa = { version = "0.6", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
@@ -49,7 +51,10 @@ rpath = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-[lints.rust]
+[lints]
+workspace = true
+
+[workspace.lints.rust]
 rust_2018_idioms = "warn"
 single_use_lifetimes = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = [
