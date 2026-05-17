@@ -13,7 +13,7 @@
 use core::num::NonZeroU32;
 
 use buffa::bytes::{Buf, BufMut};
-use buffa::encoding::{encode_varint, skip_field, varint_len, Tag, WireType};
+use buffa::encoding::{encode_varint, skip_field_depth, varint_len, Tag, WireType};
 use buffa::types::{
     decode_int64, decode_uint32, encode_int64, encode_uint32, int64_encoded_len,
     uint32_encoded_len,
@@ -58,7 +58,7 @@ impl Message for Timebase {
         &mut self,
         tag: Tag,
         buf: &mut impl Buf,
-        _depth: u32,
+        depth: u32,
     ) -> Result<(), DecodeError> {
         match tag.field_number() {
             1 => {
@@ -85,7 +85,7 @@ impl Message for Timebase {
                 let den = NonZeroU32::new(decode_uint32(buf)?).unwrap_or(NonZeroU32::MIN);
                 *self = Timebase::new(self.num(), den);
             }
-            _ => skip_field(tag, buf)?,
+            _ => skip_field_depth(tag, buf, depth)?,
         }
         Ok(())
     }
@@ -111,9 +111,11 @@ impl DefaultInstance for TimeRange {
 impl Message for TimeRange {
     fn compute_size(&self, cache: &mut SizeCache) -> u32 {
         let mut size = 0u32;
+        // proto3 zero-elision: sound here — the decoder seeds start/end/pts at 0.
         if self.start_pts() != 0 {
             size += 1 + int64_encoded_len(self.start_pts()) as u32;
         }
+        // proto3 zero-elision: sound here — the decoder seeds start/end/pts at 0.
         if self.end_pts() != 0 {
             size += 1 + int64_encoded_len(self.end_pts()) as u32;
         }
@@ -126,10 +128,12 @@ impl Message for TimeRange {
     }
 
     fn write_to(&self, cache: &mut SizeCache, buf: &mut impl BufMut) {
+        // proto3 zero-elision: sound here — the decoder seeds start/end/pts at 0.
         if self.start_pts() != 0 {
             Tag::new(1, WireType::Varint).encode(buf);
             encode_int64(self.start_pts(), buf);
         }
+        // proto3 zero-elision: sound here — the decoder seeds start/end/pts at 0.
         if self.end_pts() != 0 {
             Tag::new(2, WireType::Varint).encode(buf);
             encode_int64(self.end_pts(), buf);
@@ -184,7 +188,7 @@ impl Message for TimeRange {
                 buffa::Message::merge_length_delimited(&mut tb, buf, depth)?;
                 *self = TimeRange::new_for_decode(self.start_pts(), self.end_pts(), tb);
             }
-            _ => skip_field(tag, buf)?,
+            _ => skip_field_depth(tag, buf, depth)?,
         }
         Ok(())
     }
@@ -210,6 +214,7 @@ impl DefaultInstance for Timestamp {
 impl Message for Timestamp {
     fn compute_size(&self, cache: &mut SizeCache) -> u32 {
         let mut size = 0u32;
+        // proto3 zero-elision: sound here — the decoder seeds start/end/pts at 0.
         if self.pts() != 0 {
             size += 1 + int64_encoded_len(self.pts()) as u32;
         }
@@ -221,6 +226,7 @@ impl Message for Timestamp {
     }
 
     fn write_to(&self, cache: &mut SizeCache, buf: &mut impl BufMut) {
+        // proto3 zero-elision: sound here — the decoder seeds start/end/pts at 0.
         if self.pts() != 0 {
             Tag::new(1, WireType::Varint).encode(buf);
             encode_int64(self.pts(), buf);
@@ -260,7 +266,7 @@ impl Message for Timestamp {
                 buffa::Message::merge_length_delimited(&mut tb, buf, depth)?;
                 *self = Timestamp::new(self.pts(), tb);
             }
-            _ => skip_field(tag, buf)?,
+            _ => skip_field_depth(tag, buf, depth)?,
         }
         Ok(())
     }

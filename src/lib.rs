@@ -1282,6 +1282,8 @@ mod buffa_support;
 #[doc(hidden)]
 pub mod __buffa {
     pub mod view {
+        // `'a` is required by buffa's extern-view convention; unused here
+        // because these mediatime types are `Copy`/owned (nothing borrowed).
         pub type TimebaseView<'a> = crate::Timebase;
         pub type TimeRangeView<'a> = crate::TimeRange;
         pub type TimestampView<'a> = crate::Timestamp;
