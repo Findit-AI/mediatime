@@ -23,12 +23,14 @@ std = ["serde?/default"]
 serde = ["dep:serde"]
 arbitrary = ["dep:arbitrary"]
 quickcheck = ["dep:quickcheck"]
+buffa = ["dep:buffa"]
 
 
 [dependencies]
 serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 arbitrary = { version = "1", optional = true, default-features = false }
 quickcheck = { version = "1", optional = true, default-features = false }
+buffa = { path = "../../personal/buffa/buffa", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
