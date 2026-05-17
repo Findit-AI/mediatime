@@ -269,7 +269,10 @@ mod tests {
 
   #[test]
   fn timebase_default_instance_and_clear() {
-    assert_eq!(*<Timebase as DefaultInstance>::default_instance(), Timebase::default());
+    assert_eq!(
+      *<Timebase as DefaultInstance>::default_instance(),
+      Timebase::default()
+    );
     let mut tb = Timebase::new(7, nz(9));
     Message::clear(&mut tb);
     assert_eq!(tb, Timebase::default());
