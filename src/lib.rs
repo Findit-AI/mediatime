@@ -467,7 +467,11 @@ impl TimeRange {
   #[cfg(feature = "buffa")]
   #[inline(always)]
   pub(crate) const fn new_for_decode(start: i64, end: i64, timebase: Timebase) -> Self {
-    Self { start, end, timebase }
+    Self {
+      start,
+      end,
+      timebase,
+    }
   }
 
   /// Fallible variant of [`Self::new`]: returns `None` if `end < start`
@@ -1273,7 +1277,7 @@ mod arbitrary_impl_tests {
 }
 
 #[cfg(feature = "buffa")]
-mod buffa_support;
+mod buffa;
 
 /// Ancillary module the buffa code generator looks for when an extern-mapped
 /// type is used as a message field with view generation enabled. The mediatime
@@ -1281,11 +1285,11 @@ mod buffa_support;
 #[cfg(feature = "buffa")]
 #[doc(hidden)]
 pub mod __buffa {
-    pub mod view {
-        // `'a` is required by buffa's extern-view convention; unused here
-        // because these mediatime types are `Copy`/owned (nothing borrowed).
-        pub type TimebaseView<'a> = crate::Timebase;
-        pub type TimeRangeView<'a> = crate::TimeRange;
-        pub type TimestampView<'a> = crate::Timestamp;
-    }
+  pub mod view {
+    // `'a` is required by buffa's extern-view convention; unused here
+    // because these mediatime types are `Copy`/owned (nothing borrowed).
+    pub type TimebaseView<'a> = crate::Timebase;
+    pub type TimeRangeView<'a> = crate::TimeRange;
+    pub type TimestampView<'a> = crate::Timestamp;
+  }
 }

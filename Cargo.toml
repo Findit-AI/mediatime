@@ -1,6 +1,6 @@
 [package]
 name = "mediatime"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 repository = "https://github.com/findit-ai/mediatime"
 homepage = "https://github.com/findit-ai/mediatime"
@@ -51,7 +51,10 @@ rpath = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-[lints.rust]
+[lints]
+workspace = true
+
+[workspace.lints.rust]
 rust_2018_idioms = "warn"
 single_use_lifetimes = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = [
