@@ -30,7 +30,7 @@ buffa = ["dep:buffa"]
 serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 arbitrary = { version = "1", optional = true, default-features = false }
 quickcheck = { version = "1", optional = true, default-features = false }
-buffa = { path = "../../personal/buffa/buffa", default-features = false, optional = true }
+buffa = { version = "0.6", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
