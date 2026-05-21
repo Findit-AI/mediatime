@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(
   feature = "quickcheck",
   derive(::quickcheck_richderive::Arbitrary),
-  quickcheck(with = "crate::quickcheck_impls::timebase")
+  quickcheck(arbitrary = "crate::quickcheck_impls::timebase")
 )]
 pub struct Timebase {
   #[cfg_attr(feature = "serde", serde(rename = "numerator"))]
@@ -245,7 +245,7 @@ impl PartialOrd for Timebase {
 #[cfg_attr(
   feature = "quickcheck",
   derive(::quickcheck_richderive::Arbitrary),
-  quickcheck(with = "crate::quickcheck_impls::timestamp")
+  quickcheck(arbitrary = "crate::quickcheck_impls::timestamp")
 )]
 pub struct Timestamp {
   pts: i64,
@@ -454,7 +454,7 @@ impl PartialOrd for Timestamp {
 #[cfg_attr(
   feature = "quickcheck",
   derive(::quickcheck_richderive::Arbitrary),
-  quickcheck(with = "crate::quickcheck_impls::time_range")
+  quickcheck(arbitrary = "crate::quickcheck_impls::time_range")
 )]
 pub struct TimeRange {
   start: i64,
@@ -670,7 +670,7 @@ const fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
 }
 
 /// `fn(&mut quickcheck::Gen) -> T` helpers consumed by the per-type
-/// `#[quickcheck(with = "…")]` attributes on each type's
+/// `#[quickcheck(arbitrary = "…")]` attributes on each type's
 /// `quickcheck-richderive::Arbitrary` derive. The derive emits the actual
 /// `impl quickcheck::Arbitrary` blocks; these helpers own the bodies and
 /// preserve invariants the field-by-field default would otherwise violate
