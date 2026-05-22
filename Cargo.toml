@@ -39,9 +39,7 @@ quickcheck = { version = "1", optional = true, default-features = false }
 # `impl quickcheck::Arbitrary` blocks; the container-level `with = "…"`
 # attribute routes generation through `quickcheck_impls::*` helpers so
 # invariants stay sound.
-# Temporary git dep on the unreleased serde-style branch. Flip to
-# `{ version = "0.2", optional = true }` once 0.2.0 is published.
-quickcheck-richderive = { git = "https://github.com/al8n/quickcheck-richderive", branch = "feat/serde-style-attrs", optional = true }
+quickcheck-richderive = { version = "0.2", optional = true }
 buffa = { version = "0.6", default-features = false, optional = true }
 
 [dev-dependencies]
