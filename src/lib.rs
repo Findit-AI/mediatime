@@ -5,6 +5,14 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
+// `quickcheck` itself is std-only; the `quickcheck` feature implicitly pulls
+// std in, but the `no_std` attribute up top means `::std::*` paths still need
+// the crate brought into scope explicitly so `quickcheck-richderive`'s
+// generated `::std::boxed::Box<…>` shrink type resolves.
+#[cfg(feature = "quickcheck")]
+#[allow(unused_extern_crates)]
+extern crate std;
+
 use core::{
   cmp::Ordering,
   hash::{Hash, Hasher},
@@ -29,6 +37,11 @@ use serde::{Deserialize, Serialize};
 /// `u32` numerator / denominator.
 #[derive(Debug, Clone, Copy, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(
+  feature = "quickcheck",
+  derive(::quickcheck_richderive::Arbitrary),
+  quickcheck(arbitrary = "crate::quickcheck_impls::timebase")
+)]
 pub struct Timebase {
   #[cfg_attr(feature = "serde", serde(rename = "numerator"))]
   num: u32,
@@ -229,6 +242,11 @@ impl PartialOrd for Timebase {
 /// no rounding error. Same-timebase comparisons take a fast path on `pts`.
 #[derive(Debug, Default, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(
+  feature = "quickcheck",
+  derive(::quickcheck_richderive::Arbitrary),
+  quickcheck(arbitrary = "crate::quickcheck_impls::timestamp")
+)]
 pub struct Timestamp {
   pts: i64,
   timebase: Timebase,
@@ -433,6 +451,11 @@ impl PartialOrd for Timestamp {
 /// [`Timestamp::rescale_to`] on each endpoint).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(
+  feature = "quickcheck",
+  derive(::quickcheck_richderive::Arbitrary),
+  quickcheck(arbitrary = "crate::quickcheck_impls::time_range")
+)]
 pub struct TimeRange {
   start: i64,
   end: i64,
@@ -646,50 +669,47 @@ const fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
   a
 }
 
+/// `fn(&mut quickcheck::Gen) -> T` helpers consumed by the per-type
+/// `#[quickcheck(arbitrary = "…")]` attributes on each type's
+/// `quickcheck-richderive::Arbitrary` derive. The derive emits the actual
+/// `impl quickcheck::Arbitrary` blocks; these helpers own the bodies and
+/// preserve invariants the field-by-field default would otherwise violate
+/// (non-zero denom, non-negative pts, well-formed range).
 #[cfg(feature = "quickcheck")]
 #[cfg_attr(docsrs, doc(cfg(feature = "quickcheck")))]
-const _: () = {
+pub mod quickcheck_impls {
+  use crate::{TimeRange, Timebase, Timestamp};
+  use core::num::NonZeroU32;
   use quickcheck::{Arbitrary, Gen};
 
-  impl Arbitrary for Timebase {
-    fn arbitrary(g: &mut Gen) -> Self {
-      // Generate a random non-zero denominator
-      let den = loop {
-        let d = u32::arbitrary(g);
-        if d != 0 {
-          break d;
-        }
-      };
-      let num = u32::arbitrary(g);
-      Timebase::new(
-        num,
-        NonZeroU32::new(den).expect("we have checked den is not zero"),
-      )
-    }
+  /// Non-zero denominator + arbitrary numerator. `NonZeroU32` impls
+  /// `quickcheck::Arbitrary` directly, so the loop in the previous
+  /// hand-written impl is unnecessary.
+  pub fn timebase(g: &mut Gen) -> Timebase {
+    Timebase::new(u32::arbitrary(g), NonZeroU32::arbitrary(g))
   }
 
-  impl Arbitrary for Timestamp {
-    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-      Timestamp::new(non_negative_i64(g), Timebase::arbitrary(g))
-    }
+  /// Non-negative `pts` + arbitrary `Timebase`.
+  pub fn timestamp(g: &mut Gen) -> Timestamp {
+    Timestamp::new(non_negative_i64(g), timebase(g))
   }
 
-  impl Arbitrary for TimeRange {
-    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-      let a = non_negative_i64(g);
-      let b = non_negative_i64(g);
-      let start = a.min(b);
-      let mut end = a.max(b);
-
-      if start == end {
-        end = end.saturating_add(1);
-      }
-
-      TimeRange::new(start, end, Timebase::arbitrary(g))
+  /// `[start, end)` with `start <= end`, both non-negative. The previous
+  /// hand-written impl reused a single `Gen` draw for the timebase; same
+  /// here. When the two endpoints happen to coincide we bump `end` by 1 to
+  /// keep the range non-degenerate (matches the original behavior).
+  pub fn time_range(g: &mut Gen) -> TimeRange {
+    let a = non_negative_i64(g);
+    let b = non_negative_i64(g);
+    let start = a.min(b);
+    let mut end = a.max(b);
+    if start == end {
+      end = end.saturating_add(1);
     }
+    TimeRange::new(start, end, timebase(g))
   }
 
-  fn non_negative_i64(g: &mut quickcheck::Gen) -> i64 {
+  fn non_negative_i64(g: &mut Gen) -> i64 {
     loop {
       let d = i64::arbitrary(g);
       if d >= 0 {
@@ -697,7 +717,7 @@ const _: () = {
       }
     }
   }
-};
+}
 
 #[cfg(feature = "arbitrary")]
 #[cfg_attr(docsrs, doc(cfg(feature = "arbitrary")))]
