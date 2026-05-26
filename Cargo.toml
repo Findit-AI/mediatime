@@ -39,7 +39,7 @@ quickcheck = { version = "1", optional = true, default-features = false }
 # `impl quickcheck::Arbitrary` blocks; the container-level `with = "…"`
 # attribute routes generation through `quickcheck_impls::*` helpers so
 # invariants stay sound.
-quickcheck-richderive = { version = "0.2", optional = true }
+quickcheck-richderive = { version = "0.3", optional = true }
 buffa = { version = "0.6", default-features = false, optional = true }
 
 [dev-dependencies]
