@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-06-02
+
+### Changed
+
+- Bump `buffa` dependency from `0.6` to `0.7`. Pure version bump — the
+  buffa 0.6 → 0.7 breakers (`OwnedView::Deref` removal and the
+  `use_bytes_type` extension to `map<K, bytes>` values) don't touch
+  mediatime, and the `DefaultInstance` + `Message` impls on `Timebase`,
+  `Timestamp`, and `TimeRange` carry over byte-for-byte. The wire format
+  is unchanged. Consumers (e.g. mediaschema) that bump to `buffa 0.7`
+  must also bump their `mediatime` floor to `0.1.8` so a single `buffa`
+  version stays in the dependency graph.
+
 ## [0.1.5] — April 23, 2026
 
 ### Added
