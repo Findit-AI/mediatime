@@ -13,7 +13,7 @@
 use core::num::NonZeroU32;
 
 use ::buffa::{
-  DecodeError, DefaultInstance, Message, SizeCache,
+  DecodeContext, DecodeError, DefaultInstance, Message, SizeCache,
   bytes::{Buf, BufMut},
   encoding::{Tag, WireType, encode_varint, skip_field_depth, varint_len},
   types::{
@@ -54,7 +54,12 @@ impl Message for Timebase {
     encode_uint32(self.den().get(), buf);
   }
 
-  fn merge_field(&mut self, tag: Tag, buf: &mut impl Buf, depth: u32) -> Result<(), DecodeError> {
+  fn merge_field(
+    &mut self,
+    tag: Tag,
+    buf: &mut impl Buf,
+    ctx: DecodeContext<'_>,
+  ) -> Result<(), DecodeError> {
     match tag.field_number() {
       1 => {
         if tag.wire_type() != WireType::Varint {
@@ -80,7 +85,7 @@ impl Message for Timebase {
         let den = NonZeroU32::new(decode_uint32(buf)?).unwrap_or(NonZeroU32::MIN);
         *self = Timebase::new(self.num(), den);
       }
-      _ => skip_field_depth(tag, buf, depth)?,
+      _ => skip_field_depth(tag, buf, ctx.depth())?,
     }
     Ok(())
   }
@@ -136,7 +141,12 @@ impl Message for TimeRange {
     self.timebase().write_to(cache, buf);
   }
 
-  fn merge_field(&mut self, tag: Tag, buf: &mut impl Buf, depth: u32) -> Result<(), DecodeError> {
+  fn merge_field(
+    &mut self,
+    tag: Tag,
+    buf: &mut impl Buf,
+    ctx: DecodeContext<'_>,
+  ) -> Result<(), DecodeError> {
     match tag.field_number() {
       1 => {
         if tag.wire_type() != WireType::Varint {
@@ -173,10 +183,10 @@ impl Message for TimeRange {
           });
         }
         let mut tb = self.timebase();
-        buffa::Message::merge_length_delimited(&mut tb, buf, depth)?;
+        buffa::Message::merge_length_delimited(&mut tb, buf, ctx)?;
         *self = TimeRange::new_for_decode(self.start_pts(), self.end_pts(), tb);
       }
-      _ => skip_field_depth(tag, buf, depth)?,
+      _ => skip_field_depth(tag, buf, ctx.depth())?,
     }
     Ok(())
   }
@@ -222,7 +232,12 @@ impl Message for Timestamp {
     self.timebase().write_to(cache, buf);
   }
 
-  fn merge_field(&mut self, tag: Tag, buf: &mut impl Buf, depth: u32) -> Result<(), DecodeError> {
+  fn merge_field(
+    &mut self,
+    tag: Tag,
+    buf: &mut impl Buf,
+    ctx: DecodeContext<'_>,
+  ) -> Result<(), DecodeError> {
     match tag.field_number() {
       1 => {
         if tag.wire_type() != WireType::Varint {
@@ -244,10 +259,10 @@ impl Message for Timestamp {
           });
         }
         let mut tb = self.timebase();
-        buffa::Message::merge_length_delimited(&mut tb, buf, depth)?;
+        buffa::Message::merge_length_delimited(&mut tb, buf, ctx)?;
         *self = Timestamp::new(self.pts(), tb);
       }
-      _ => skip_field_depth(tag, buf, depth)?,
+      _ => skip_field_depth(tag, buf, ctx.depth())?,
     }
     Ok(())
   }
