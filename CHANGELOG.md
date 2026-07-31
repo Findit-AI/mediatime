@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.10]
+
+### Changed
+
+- Bump `buffa` dependency from `0.8` to `0.9`. buffa 0.9 replaced the
+  `BufMut` bound on `Message::write_to` with its new `EncodeSink` trait, so
+  the three hand-written `write_to` impls change one parameter type; every
+  `BufMut` implementor is an `EncodeSink` through a blanket impl, so callers
+  passing `Vec<u8>`/`BytesMut` are unaffected. **The wire format is
+  unchanged** — the tag, varint and length-delimited encoders emit the same
+  bytes, and bytes written under buffa 0.6/0.7/0.8 still decode. Consumers
+  that bump to `buffa 0.9` must also bump their `mediatime` floor to
+  `0.1.10` so a single `buffa` version stays in the dependency graph.
+
 ## [0.1.8] — 2026-06-02
 
 ### Changed

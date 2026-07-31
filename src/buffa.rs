@@ -13,8 +13,8 @@
 use core::num::NonZeroU32;
 
 use ::buffa::{
-  DecodeContext, DecodeError, DefaultInstance, Message, SizeCache,
-  bytes::{Buf, BufMut},
+  DecodeContext, DecodeError, DefaultInstance, EncodeSink, Message, SizeCache,
+  bytes::Buf,
   encoding::{Tag, WireType, encode_varint, skip_field_depth, varint_len},
   types::{
     decode_int64, decode_uint32, encode_int64, encode_uint32, int64_encoded_len, uint32_encoded_len,
@@ -47,7 +47,7 @@ impl Message for Timebase {
     2 + uint32_encoded_len(self.num()) as u32 + uint32_encoded_len(self.den().get()) as u32
   }
 
-  fn write_to(&self, _cache: &mut SizeCache, buf: &mut impl BufMut) {
+  fn write_to(&self, _cache: &mut SizeCache, buf: &mut impl EncodeSink) {
     Tag::new(1, WireType::Varint).encode(buf);
     encode_uint32(self.num(), buf);
     Tag::new(2, WireType::Varint).encode(buf);
@@ -125,7 +125,7 @@ impl Message for TimeRange {
     size
   }
 
-  fn write_to(&self, cache: &mut SizeCache, buf: &mut impl BufMut) {
+  fn write_to(&self, cache: &mut SizeCache, buf: &mut impl EncodeSink) {
     // proto3 zero-elision: sound here — the decoder seeds start/end/pts at 0.
     if self.start_pts() != 0 {
       Tag::new(1, WireType::Varint).encode(buf);
@@ -221,7 +221,7 @@ impl Message for Timestamp {
     size
   }
 
-  fn write_to(&self, cache: &mut SizeCache, buf: &mut impl BufMut) {
+  fn write_to(&self, cache: &mut SizeCache, buf: &mut impl EncodeSink) {
     // proto3 zero-elision: sound here — the decoder seeds start/end/pts at 0.
     if self.pts() != 0 {
       Tag::new(1, WireType::Varint).encode(buf);

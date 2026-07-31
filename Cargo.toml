@@ -1,6 +1,6 @@
 [package]
 name = "mediatime"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 repository = "https://github.com/findit-ai/mediatime"
 homepage = "https://github.com/findit-ai/mediatime"
@@ -40,7 +40,7 @@ quickcheck = { version = "1", optional = true, default-features = false }
 # attribute routes generation through `quickcheck_impls::*` helpers so
 # invariants stay sound.
 quickcheck-richderive = { version = "0.3", optional = true }
-buffa = { version = "0.8", default-features = false, optional = true }
+buffa = { version = "0.9", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
