@@ -21,7 +21,7 @@ Exact-integer rational time types for media pipelines — FFmpeg-style `Timebase
 
 `mediatime` provides the same three primitives every media pipeline reinvents, done once with integer-exact semantics:
 
-- **[`Timebase`]** — a rational `num/den` (both `u32`, non-zero denominator). Directly mirrors FFmpeg's `AVRational`. Common values: `1/1000` (ms PTS), `1/90000` (MPEG-TS), `30000/1001` (NTSC frame rate).
+- **[`Timebase`]** — a rational `num/den` (both `i32`; the constructor requires `num >= 0` and `den > 0`). Signed to match FFmpeg's `AVRational`, which is a pair of C `int`s: a `u32` numerator or denominator above `i32::MAX` is representable but cannot round-trip into an `AVRational`, and `i32` is also a native `INTEGER` on PostgreSQL, MySQL and SQLite. Common values: `1/1000` (ms PTS), `1/90000` (MPEG-TS), `30000/1001` (NTSC frame rate).
 - **[`Timestamp`]** — an `i64` PTS tagged with a `Timebase`. Two timestamps compare by the *instant* they represent, not by their raw `(pts, timebase)` tuple, so `Timestamp(1_000, 1/1000)` equals `Timestamp(90_000, 1/90_000)`. Cross-timebase comparison uses a 128-bit cross-multiply — no division, no rounding.
 - **[`TimeRange`]** — a half-open `[start, end)` interval sharing a single `Timebase`. Carries the endpoints as raw PTS; returns `Timestamp` on demand.
 
@@ -44,7 +44,7 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 
 ## Features
 
-- **Value-based equality and ordering.** `1/2 == 2/4 == 3/6`; `Timestamp(1000, 1/1000) == Timestamp(90_000, 1/90_000)`. Cross-timebase `cmp` uses 128-bit cross-multiply — exact for any `u32` numerator/denominator with any `i64` PTS.
+- **Value-based equality and ordering.** `1/2 == 2/4 == 3/6`; `Timestamp(1000, 1/1000) == Timestamp(90_000, 1/90_000)`. Cross-timebase `cmp` uses 128-bit cross-multiply — exact for any `i32` numerator/denominator with any `i64` PTS.
 - **Hash agrees with Eq.** Hashes the reduced-form rational, so equal rationals hash identically and you can use these types as `HashMap` keys.
 - **FFmpeg-style utilities.** `rescale_pts` (a.k.a. `av_rescale_q`), `frames_to_duration`, `duration_to_pts`, `duration_since`, `saturating_sub_duration`.
 - **`TimeRange` interpolation.** Linear midpoint (`interpolate(t)`) for placing an event somewhere between fade-out and fade-in frames, with `t ∈ [0, 1]` clamped.
@@ -54,13 +54,13 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 ## Example
 
 ```rust
-use core::num::NonZeroU32;
+use core::num::NonZeroI32;
 use core::time::Duration;
 use mediatime::{Timebase, Timestamp, TimeRange};
 
 // FFmpeg-style rational timebases.
-let ms     = Timebase::new(1, NonZeroU32::new(1000).unwrap());
-let mpegts = Timebase::new(1, NonZeroU32::new(90_000).unwrap());
+let ms     = Timebase::new(1, NonZeroI32::new(1000).unwrap());
+let mpegts = Timebase::new(1, NonZeroI32::new(90_000).unwrap());
 
 // Same instant in two different timebases — they compare equal.
 let a = Timestamp::new(1_000, ms);
@@ -72,7 +72,7 @@ assert_eq!(a.duration_since(&b), Some(Duration::ZERO));
 assert_eq!(ms.rescale(500, mpegts), 45_000);
 
 // Frame rate helpers — treat `Timebase` as fps and count frames.
-let ntsc = Timebase::new(30_000, NonZeroU32::new(1001).unwrap());
+let ntsc = Timebase::new(30_000, NonZeroI32::new(1001).unwrap());
 assert_eq!(ntsc.frames_to_duration(30_000), Duration::from_secs(1001));
 
 // A half-open [start, end) range with interpolation.

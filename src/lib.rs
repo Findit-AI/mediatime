@@ -16,25 +16,70 @@ extern crate std;
 use core::{
   cmp::Ordering,
   hash::{Hash, Hasher},
-  num::NonZeroU32,
+  num::NonZeroI32,
   time::Duration,
 };
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// A media timebase represented as a rational number: numerator over non-zero denominator.
+/// `NonZeroI32` for 1: the default denominator, and the clamp target when a
+/// malformed denominator arrives on the wire.
+///
+/// Spelled out rather than reached for as `NonZeroI32::MIN`, which is
+/// `i32::MIN` — a value [`Timebase::new`] rejects.
+pub(crate) const DEN_ONE: NonZeroI32 = match NonZeroI32::new(1) {
+  Some(v) => v,
+  None => unreachable!(),
+};
+
+/// A media timebase represented as a rational number: a non-negative numerator
+/// over a strictly positive denominator.
 ///
 /// Typical values: `1/1000` for millisecond PTS, `1/90000` for MPEG-TS,
 /// `1/48000` for audio samples, `30000/1001` for NTSC video (when used as a
 /// frame rate).
 ///
+/// # Why both halves are signed
+///
+/// FFmpeg's rational is signed — `AVRational { int num; int den; }` — and it is
+/// the type this crate exists to interoperate with: `av_rescale_q` takes two of
+/// them, `AVFrame::time_base` is one, and `AVFrame::pts` is an `int64_t` whose
+/// `AV_NOPTS_VALUE` sentinel is `i64::MIN`, so signedness is load-bearing
+/// throughout that API. An unsigned numerator or denominator above `i32::MAX`
+/// is representable but **cannot round-trip into an `AVRational`** — usable in
+/// Rust, unusable at the boundary. Matching the width and the sign removes that
+/// failure mode by construction.
+///
+/// Storage points the same way: `sqlx` has no `Type<Postgres>`/`Encode<Postgres>`
+/// for `u32`, whereas `i32` is a native `INTEGER` on PostgreSQL, MySQL and
+/// SQLite alike, so a storage face reads these fields directly instead of
+/// widening to `i64` and narrowing back through an error path.
+///
+/// Two other decoder SDKs were surveyed and impose no counter-pressure:
+/// Blackmagic RAW (`GetFrameRate(float*)`) and RED R3D
+/// (`float VideoAudioFramerate()`) are frame-indexed with a floating-point
+/// rate and never hand out a rational at all.
+///
+/// # Invariants
+///
+/// `num >= 0` and `den > 0`. `NonZeroI32` carries only the non-zero half, so
+/// the rest is enforced by [`Timebase::new`] (and by every setter, which routes
+/// through it). A **zero numerator stays legal**: it is a degenerate timebase,
+/// valid to construct and to compare, but not a valid rescale target — see
+/// [`Timebase::rescale_pts`].
+///
+/// `AVRational` itself permits a negative denominator and normalizes the sign
+/// into the numerator via `av_reduce`; that is a convention rather than a type
+/// guarantee, and `AVRational` is laxer than this crate needs because it also
+/// serves aspect ratios. Here it is a type-level guarantee instead.
+///
 /// # Equality and ordering
 ///
 /// Comparison is **value-based**: `1/2` equals `2/4`, and `1/3 < 2/3 < 1/1`.
 /// [`Hash`] hashes the reduced (lowest-terms) form, so equal rationals hash
-/// the same. Cross-multiplication uses `u64` intermediates — exact for any
-/// `u32` numerator / denominator.
+/// the same. Cross-multiplication uses `i64` intermediates — exact for any
+/// `i32` numerator / denominator.
 #[derive(Debug, Clone, Copy, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
@@ -43,73 +88,119 @@ use serde::{Deserialize, Serialize};
   quickcheck(arbitrary = "crate::quickcheck_impls::timebase")
 )]
 pub struct Timebase {
-  #[cfg_attr(feature = "serde", serde(rename = "numerator"))]
-  num: u32,
-  #[cfg_attr(feature = "serde", serde(rename = "denominator"))]
-  den: NonZeroU32,
+  #[cfg_attr(
+    feature = "serde",
+    serde(rename = "numerator", deserialize_with = "de_num")
+  )]
+  num: i32,
+  #[cfg_attr(
+    feature = "serde",
+    serde(rename = "denominator", deserialize_with = "de_den")
+  )]
+  den: NonZeroI32,
 }
 
 impl Default for Timebase {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn default() -> Self {
-    Self::new(1, NonZeroU32::new(1).unwrap())
+    Self::new(1, DEN_ONE)
   }
 }
 
 impl Timebase {
-  /// Creates a new `Timebase` with the given numerator and non-zero denominator.
+  /// Creates a new `Timebase` with the given numerator and denominator.
+  ///
+  /// # Panics
+  ///
+  /// - Panics if `num < 0` (a negative timebase is meaningless).
+  /// - Panics if `den <= 0` (`NonZeroI32` rules out zero; this rules out the
+  ///   negative denominators `AVRational` would tolerate).
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn new(num: u32, den: NonZeroU32) -> Self {
+  pub const fn new(num: i32, den: NonZeroI32) -> Self {
+    assert!(num >= 0, "timebase numerator must not be negative");
+    assert!(den.get() > 0, "timebase denominator must be positive");
+
     Self { num, den }
+  }
+
+  /// Fallible variant of [`Self::new`]: returns `None` instead of panicking
+  /// when `num < 0` or `den < 0`. Accepts `num == 0` (degenerate timebase).
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn try_new(num: i32, den: NonZeroI32) -> Option<Self> {
+    if num >= 0 && den.get() > 0 {
+      Some(Self { num, den })
+    } else {
+      None
+    }
   }
 
   /// Returns the numerator.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn num(&self) -> u32 {
+  pub const fn num(&self) -> i32 {
     self.num
   }
 
   /// Returns the denominator.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn den(&self) -> NonZeroU32 {
+  pub const fn den(&self) -> NonZeroI32 {
     self.den
   }
 
   /// Set the value of the numerator.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `num < 0`, as [`Self::new`] does.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn with_num(mut self, num: u32) -> Self {
+  pub const fn with_num(mut self, num: i32) -> Self {
     self.set_num(num);
     self
   }
 
   /// Set the value of the denominator.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `den < 0`, as [`Self::new`] does.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn with_den(mut self, den: NonZeroU32) -> Self {
+  pub const fn with_den(mut self, den: NonZeroI32) -> Self {
     self.set_den(den);
     self
   }
 
   /// Set the value of the numerator in place.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `num < 0`, as [`Self::new`] does.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn set_num(&mut self, num: u32) -> &mut Self {
-    self.num = num;
+  pub const fn set_num(&mut self, num: i32) -> &mut Self {
+    // Routed through the constructor so the sign invariants have exactly one
+    // enforcement site; the arithmetic below relies on them holding for every
+    // reachable `Timebase`, not just constructed-and-never-mutated ones.
+    *self = Self::new(num, self.den);
     self
   }
 
   /// Set the value of the denominator in place.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `den < 0`, as [`Self::new`] does.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn set_den(&mut self, den: NonZeroU32) -> &mut Self {
-    self.den = den;
+  pub const fn set_den(&mut self, den: NonZeroI32) -> &mut Self {
+    *self = Self::new(self.num, den);
     self
   }
 
   /// Rescales `pts` from timebase `from` to timebase `to`, rounding toward zero.
   ///
-  /// Equivalent to FFmpeg's `av_rescale_q`. Uses a 128-bit intermediate to
-  /// avoid overflow for typical video PTS ranges. If the rescaled value
-  /// exceeds `i64`'s range (pathological for real video), the result is
-  /// **saturated** to `i64::MIN` or `i64::MAX` — this matches the behavior
-  /// promised by `duration_to_pts` and avoids silent wraparound.
+  /// Equivalent to FFmpeg's `av_rescale_q`. The product is formed in `i128`,
+  /// which cannot overflow: the operands are bounded by `2^63`, `2^31` and
+  /// `2^31`, so the intermediate stays under `2^125`. If the *result* exceeds
+  /// `i64`'s range (pathological for real video), it is **saturated** to
+  /// `i64::MIN` or `i64::MAX` — this matches the behavior promised by
+  /// `duration_to_pts` and avoids silent wraparound.
   ///
   /// # Panics
   ///
@@ -161,6 +252,10 @@ impl Timebase {
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn frames_to_duration(&self, frames: u32) -> Duration {
     // frames / (num/den) seconds = frames * den / num seconds
+    //
+    // `as u128` widens rather than sign-extends only because the constructor
+    // guarantees `num >= 0` and `den > 0`; a negative operand here would
+    // become an enormous positive one.
     let num = self.num as u128;
     let den = self.den.get() as u128;
     assert!(num != 0, "frame rate numerator must be non-zero");
@@ -178,6 +273,7 @@ impl Timebase {
   /// timebase. Returns `0` if `self.num() == 0` (a degenerate timebase).
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn duration_to_pts(&self, d: Duration) -> i64 {
+    // Widening, not sign extension — see `frames_to_duration`.
     let num = self.num as u128;
     if num == 0 {
       return 0;
@@ -197,18 +293,21 @@ impl Timebase {
 impl PartialEq for Timebase {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn eq(&self, other: &Self) -> bool {
-    // a.num * b.den == b.num * a.den (cross-multiply; u32 * u32 fits in u64)
-    (self.num as u64) * (other.den.get() as u64) == (other.num as u64) * (self.den.get() as u64)
+    // a.num * b.den == b.num * a.den (cross-multiply; i32 * i32 fits in i64)
+    (self.num as i64) * (other.den.get() as i64) == (other.num as i64) * (self.den.get() as i64)
   }
 }
 
 impl Hash for Timebase {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn hash<H: Hasher>(&self, state: &mut H) {
-    let d = self.den.get();
-    // gcd(num, d) ≥ 1 because d ≥ 1 (NonZeroU32).
-    let g = gcd_u32(self.num, d);
-    (self.num / g).hash(state);
+    // `unsigned_abs` is an exact widening here, not a magnitude collapse: the
+    // constructor guarantees `num >= 0` and `den > 0`.
+    let n = self.num.unsigned_abs();
+    let d = self.den.get().unsigned_abs();
+    // gcd(n, d) ≥ 1 because d ≥ 1.
+    let g = gcd_u32(n, d);
+    (n / g).hash(state);
     (d / g).hash(state);
   }
 }
@@ -216,8 +315,8 @@ impl Hash for Timebase {
 impl Ord for Timebase {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn cmp(&self, other: &Self) -> Ordering {
-    let lhs = (self.num as u64) * (other.den.get() as u64);
-    let rhs = (other.num as u64) * (self.den.get() as u64);
+    let lhs = (self.num as i64) * (other.den.get() as i64);
+    let rhs = (other.num as i64) * (self.den.get() as i64);
     lhs.cmp(&rhs)
   }
 }
@@ -369,6 +468,11 @@ impl Timestamp {
 
     // Compute LCM of the two denominators via GCD so we can subtract in a
     // common timebase without per-endpoint truncation.
+    //
+    // Euclid on signed operands needs both to be positive: Rust's `%` takes
+    // the sign of the dividend, so a negative denominator would yield a
+    // negative gcd and silently invert the scale factors below. The
+    // constructor guarantees `den > 0`.
     let self_den = self.timebase.den.get();
     let earlier_den = earlier.timebase.den.get();
 
@@ -416,7 +520,8 @@ impl Hash for Timestamp {
   fn hash<H: Hasher>(&self, state: &mut H) {
     // Canonical representation: instant as reduced rational (pts * num, den).
     let n: i128 = (self.pts as i128) * (self.timebase.num as i128);
-    let d: u128 = self.timebase.den.get() as u128;
+    // Exact widening: the constructor guarantees `den > 0`.
+    let d: u128 = self.timebase.den.get().unsigned_abs() as u128;
     // gcd operates on magnitudes; denominator stays positive. gcd ≥ 1 since d ≥ 1.
     let g = gcd_u128(n.unsigned_abs(), d) as i128;
     let rn = n / g;
@@ -649,6 +754,40 @@ impl TimeRange {
   }
 }
 
+/// Field validators for [`Timebase`]'s derived `Deserialize`.
+///
+/// The derive assigns fields directly, bypassing [`Timebase::new`]. While the
+/// fields were `u32`/`NonZeroU32` their types made every invariant violation
+/// unrepresentable; `i32`/`NonZeroI32` no longer do, so deserialization would
+/// otherwise be a second construction path that can mint a `Timebase` the
+/// constructor rejects. The two invariants are independent per field, so a
+/// `deserialize_with` on each is enough — no intermediate representation and
+/// no allocation.
+#[cfg(feature = "serde")]
+mod de {
+  use core::num::NonZeroI32;
+  use serde::{Deserialize, Deserializer, de::Error};
+
+  pub(super) fn de_num<'de, D: Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+    let v = i32::deserialize(d)?;
+    if v < 0 {
+      return Err(D::Error::custom("timebase numerator must not be negative"));
+    }
+    Ok(v)
+  }
+
+  pub(super) fn de_den<'de, D: Deserializer<'de>>(d: D) -> Result<NonZeroI32, D::Error> {
+    let v = NonZeroI32::deserialize(d)?;
+    if v.get() < 0 {
+      return Err(D::Error::custom("timebase denominator must be positive"));
+    }
+    Ok(v)
+  }
+}
+
+#[cfg(feature = "serde")]
+use de::{de_den, de_num};
+
 #[cfg_attr(not(tarpaulin), inline(always))]
 const fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
   while b != 0 {
@@ -679,14 +818,21 @@ const fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
 #[cfg_attr(docsrs, doc(cfg(feature = "quickcheck")))]
 pub mod quickcheck_impls {
   use crate::{TimeRange, Timebase, Timestamp};
-  use core::num::NonZeroU32;
+  use core::num::NonZeroI32;
   use quickcheck::{Arbitrary, Gen};
 
-  /// Non-zero denominator + arbitrary numerator. `NonZeroU32` impls
-  /// `quickcheck::Arbitrary` directly, so the loop in the previous
-  /// hand-written impl is unnecessary.
+  /// Numerator in `0..=i32::MAX`, denominator in `1..=i32::MAX` — exactly what
+  /// [`Timebase::new`] accepts.
+  ///
+  /// `quickcheck` implements `Arbitrary` only for the *unsigned* `NonZero`
+  /// types, so the denominator cannot be drawn at its field type; both halves
+  /// are folded from a `u32` draw instead. Folding rather than rejecting keeps
+  /// this total for every `Gen`, including one whose size admits only zero.
   pub fn timebase(g: &mut Gen) -> Timebase {
-    Timebase::new(u32::arbitrary(g), NonZeroU32::arbitrary(g))
+    const MAX: u32 = i32::MAX as u32;
+    let num = (u32::arbitrary(g) % (MAX + 1)) as i32;
+    let den = (u32::arbitrary(g) % MAX + 1) as i32;
+    Timebase::new(num, NonZeroI32::new(den).expect("den is in 1..=i32::MAX"))
   }
 
   /// Non-negative `pts` + arbitrary `Timebase`.
@@ -726,10 +872,12 @@ const _: () = {
 
   impl<'a> Arbitrary<'a> for Timebase {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-      // Generate a random non-zero denominator
-      let d = u.arbitrary::<core::num::NonZeroU32>()?;
-      let num = u.arbitrary::<u32>()?;
-      Ok(Timebase::new(num, d))
+      // Drawn in range rather than filtered: `Timebase::new` panics outside
+      // it, and a fuzz generator must not be able to trip that.
+      let den = u.int_in_range(1..=i32::MAX)?;
+      let num = u.int_in_range(0..=i32::MAX)?;
+      let den = core::num::NonZeroI32::new(den).expect("den is in 1..=i32::MAX");
+      Ok(Timebase::new(num, den))
     }
   }
 
@@ -768,8 +916,8 @@ const _: () = {
 mod tests {
   use super::*;
 
-  const fn nz(n: u32) -> NonZeroU32 {
-    match NonZeroU32::new(n) {
+  const fn nz(n: i32) -> NonZeroI32 {
+    match NonZeroI32::new(n) {
       Some(v) => v,
       None => panic!("zero"),
     }
@@ -808,12 +956,12 @@ mod tests {
 
   #[test]
   fn rescale_saturates_on_i64_overflow() {
-    // Rescale from a coarse timebase (u32::MAX seconds per tick) to a fine
-    // one (1/u32::MAX seconds per tick): even a modest pts blows past
+    // Rescale from a coarse timebase (i32::MAX seconds per tick) to a fine
+    // one (1/i32::MAX seconds per tick): even a modest pts blows past
     // i64::MAX in the 128-bit intermediate. `rescale_pts` should saturate
     // to i64::MAX / i64::MIN rather than wrap via `as i64`.
-    let from = Timebase::new(u32::MAX, nz(1));
-    let to = Timebase::new(1, nz(u32::MAX));
+    let from = Timebase::new(i32::MAX, nz(1));
+    let to = Timebase::new(1, nz(i32::MAX));
     assert_eq!(from.rescale(1_000_000, to), i64::MAX);
     assert_eq!(from.rescale(-1_000_000, to), i64::MIN);
   }
@@ -862,6 +1010,73 @@ mod tests {
     assert_eq!(a, b);
     assert_eq!(hash_of(&a), hash_of(&b));
     assert!(a < Timebase::new(1, nz(1_000_000)));
+  }
+
+  #[test]
+  fn timebase_zero_denominator_stays_unrepresentable() {
+    // `NonZeroI32` still carries the non-zero half of the invariant, so a
+    // zero denominator cannot reach `new` at all — only the *sign* half moved
+    // into the constructor.
+    assert!(NonZeroI32::new(0).is_none());
+  }
+
+  #[test]
+  fn timebase_rejects_negative_denominator() {
+    assert!(Timebase::try_new(1, nz(-1000)).is_none());
+    assert!(Timebase::try_new(1, nz(i32::MIN)).is_none());
+  }
+
+  #[test]
+  fn timebase_rejects_negative_numerator() {
+    assert!(Timebase::try_new(-1, nz(1000)).is_none());
+    assert!(Timebase::try_new(i32::MIN, nz(1000)).is_none());
+  }
+
+  #[test]
+  fn timebase_accepts_zero_numerator_and_i32_max() {
+    // A zero numerator is a degenerate but legal timebase, and both fields
+    // must reach the top of their range — the whole point of the type change
+    // is that `i32::MAX` round-trips into an `AVRational`.
+    assert!(Timebase::try_new(0, nz(3)).is_some());
+    let max = Timebase::try_new(i32::MAX, nz(i32::MAX)).expect("i32::MAX is legal at both ends");
+    assert_eq!(max.num(), i32::MAX);
+    assert_eq!(max.den().get(), i32::MAX);
+    assert_eq!(max, Timebase::new(i32::MAX, nz(i32::MAX)));
+  }
+
+  #[test]
+  #[should_panic(expected = "timebase numerator must not be negative")]
+  fn timebase_new_panics_on_negative_numerator() {
+    Timebase::new(-1, nz(1000));
+  }
+
+  #[test]
+  #[should_panic(expected = "timebase denominator must be positive")]
+  fn timebase_new_panics_on_negative_denominator() {
+    Timebase::new(1, nz(-1000));
+  }
+
+  #[test]
+  #[should_panic(expected = "timebase numerator must not be negative")]
+  fn timebase_set_num_panics_on_negative() {
+    Timebase::default().with_num(-1);
+  }
+
+  #[test]
+  #[should_panic(expected = "timebase denominator must be positive")]
+  fn timebase_set_den_panics_on_negative() {
+    Timebase::default().with_den(nz(-1));
+  }
+
+  #[test]
+  fn timebase_is_const_constructible() {
+    // The panics added to `new` must not have cost the type its `const`
+    // constructor, which the crate advertises.
+    const TB: Timebase = Timebase::new(30_000, nz(1001));
+    const NUM: i32 = TB.num();
+    const TRIED: Option<Timebase> = Timebase::try_new(-1, DEN_ONE);
+    assert_eq!(NUM, 30_000);
+    assert!(TRIED.is_none());
   }
 
   #[test]
@@ -953,10 +1168,10 @@ mod tests {
 
   #[test]
   fn duration_since_saturates_to_duration_max_on_overflow() {
-    // Use a timebase of `u32::MAX / 1` (each tick ≈ 2^32 seconds). Then
-    // i64::MAX ticks ≈ 2^95 seconds — far more than u64::MAX. Should
+    // Use a timebase of `i32::MAX / 1` (each tick ≈ 2^31 seconds). Then
+    // i64::MAX ticks ≈ 2^94 seconds — far more than u64::MAX. Should
     // saturate to Duration::MAX rather than wrap when casting seconds to u64.
-    let tb = Timebase::new(u32::MAX, nz(1));
+    let tb = Timebase::new(i32::MAX, nz(1));
     let huge = Timestamp::new(i64::MAX, tb);
     let zero = Timestamp::new(0, tb);
     assert_eq!(huge.duration_since(&zero), Some(Duration::MAX));
@@ -1183,6 +1398,57 @@ mod tests {
   }
 }
 
+#[cfg(all(test, feature = "serde"))]
+mod serde_impl_tests {
+  use super::*;
+  use serde::{
+    Deserialize,
+    de::value::{Error, MapDeserializer},
+  };
+
+  fn de(num: i32, den: i32) -> Result<Timebase, Error> {
+    Timebase::deserialize(MapDeserializer::new(
+      [("numerator", num), ("denominator", den)].into_iter(),
+    ))
+  }
+
+  #[test]
+  fn deserialize_accepts_the_values_the_constructor_accepts() {
+    assert_eq!(de(30_000, 1001).unwrap(), Timebase::new(30_000, nz(1001)));
+    assert_eq!(de(0, 3).unwrap(), Timebase::new(0, nz(3)));
+    assert_eq!(
+      de(i32::MAX, i32::MAX).unwrap(),
+      Timebase::new(i32::MAX, nz(i32::MAX))
+    );
+  }
+
+  #[test]
+  fn deserialize_rejects_what_the_constructor_rejects() {
+    // The derive assigns fields directly; without the field validators these
+    // would mint a `Timebase` that `new` refuses, which the arithmetic's
+    // sign assumptions depend on being impossible.
+    assert!(de(-1, 1000).is_err());
+    assert!(de(1, -1000).is_err());
+    assert!(de(1, 0).is_err());
+  }
+
+  #[test]
+  fn field_names_are_unchanged() {
+    // The wire names are the compatibility surface; the field *types* moved
+    // but `numerator`/`denominator` must not.
+    let by_wrong_name: Result<Timebase, Error> =
+      Timebase::deserialize(MapDeserializer::new([("num", 1), ("den", 2)].into_iter()));
+    assert!(by_wrong_name.is_err());
+  }
+
+  const fn nz(n: i32) -> NonZeroI32 {
+    match NonZeroI32::new(n) {
+      Some(v) => v,
+      None => panic!("zero"),
+    }
+  }
+}
+
 #[cfg(all(test, feature = "quickcheck"))]
 mod quickcheck_arbitrary_tests {
   use super::*;
@@ -1196,7 +1462,8 @@ mod quickcheck_arbitrary_tests {
     let mut g = Gen::new(SIZE);
     for _ in 0..ITERATIONS {
       let tb = Timebase::arbitrary(&mut g);
-      assert!(tb.den().get() != 0);
+      assert!(tb.den().get() > 0, "den was {}", tb.den());
+      assert!(tb.num() >= 0, "num was {}", tb.num());
     }
   }
 
@@ -1206,7 +1473,8 @@ mod quickcheck_arbitrary_tests {
     for _ in 0..ITERATIONS {
       let ts = Timestamp::arbitrary(&mut g);
       assert!(ts.pts() >= 0, "pts was {}", ts.pts());
-      assert!(ts.timebase().den().get() != 0);
+      assert!(ts.timebase().den().get() > 0);
+      assert!(ts.timebase().num() >= 0);
     }
   }
 
@@ -1223,7 +1491,8 @@ mod quickcheck_arbitrary_tests {
         r.start_pts(),
         r.end_pts()
       );
-      assert!(r.timebase().den().get() != 0);
+      assert!(r.timebase().den().get() > 0);
+      assert!(r.timebase().num() >= 0);
     }
   }
 }
@@ -1254,7 +1523,8 @@ mod arbitrary_impl_tests {
       let data = pseudo_random_bytes(seed);
       let mut u = Unstructured::new(&data);
       let tb = Timebase::arbitrary(&mut u).expect("enough bytes to build a Timebase");
-      assert!(tb.den().get() != 0);
+      assert!(tb.den().get() > 0, "den was {}", tb.den());
+      assert!(tb.num() >= 0, "num was {}", tb.num());
     }
   }
 
@@ -1265,7 +1535,8 @@ mod arbitrary_impl_tests {
       let mut u = Unstructured::new(&data);
       let ts = Timestamp::arbitrary(&mut u).expect("enough bytes to build a Timestamp");
       assert!(ts.pts() >= 0, "pts was {}", ts.pts());
-      assert!(ts.timebase().den().get() != 0);
+      assert!(ts.timebase().den().get() > 0);
+      assert!(ts.timebase().num() >= 0);
     }
   }
 
@@ -1278,7 +1549,8 @@ mod arbitrary_impl_tests {
       assert!(r.start_pts() >= 0);
       assert!(r.end_pts() >= 0);
       assert!(r.start_pts() <= r.end_pts());
-      assert!(r.timebase().den().get() != 0);
+      assert!(r.timebase().den().get() > 0);
+      assert!(r.timebase().num() >= 0);
     }
   }
 
@@ -1292,7 +1564,8 @@ mod arbitrary_impl_tests {
     assert!(r.start_pts() >= 0);
     assert!(r.end_pts() >= 0);
     assert!(r.start_pts() <= r.end_pts());
-    assert!(r.timebase().den().get() != 0);
+    assert!(r.timebase().den().get() > 0);
+    assert!(r.timebase().num() >= 0);
   }
 }
 
