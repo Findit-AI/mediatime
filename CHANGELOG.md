@@ -31,6 +31,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   passing `Vec<u8>`/`BytesMut` are unaffected. Consumers that bump to
   `buffa 0.9` must also bump their `mediatime` floor to `0.2.0` so a single
   `buffa` version stays in the dependency graph.
+- Bump `quickcheck-richderive` dependency from `0.3` to `0.4`. The derive's
+  0.4.0 is a one-dependency release — `syn 2 → syn 3` — forced by syn 3
+  replacing `Signature::unsafety: Option<Token![unsafe]>` with the tri-state
+  `Signature::safety` that Rust 2024's `unsafe extern` needs. It changes no
+  emitted token and no diagnostic, so the three derived
+  `impl quickcheck::Arbitrary` blocks on `Timebase`, `Timestamp` and
+  `TimeRange` expand byte-for-byte as before; the bump is confined to the
+  optional `quickcheck` feature and moves no public API, no wire format and
+  no runtime behaviour. It does drop `syn 2` from the normal dependency
+  graph, leaving `syn 3` as the only `syn` a consumer compiles for
+  mediatime itself.
 
 ### Added
 
