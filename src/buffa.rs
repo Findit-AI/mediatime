@@ -3,31 +3,37 @@
 //!
 //! Wire format (clean redesign — no compatibility with findit-proto's
 //! hand-rolled encoding is required):
-//!   Timebase  { uint32 num = 1;  uint32 den = 2; }
+//!   Timebase  { int32  num = 1;  int32  den = 2; }
 //!   TimeRange { int64  start = 1; int64  end = 2; Timebase timebase = 3; }
 //!   Timestamp { int64  pts = 1;  Timebase timebase = 2; }
 //!
 //! The nested `Timebase` is always encoded (presence-independent) so that
 //! `decode(encode(x)) == x` holds unconditionally.
+//!
+//! `Timebase`'s fields were `uint32` before the type became signed. Protobuf's
+//! `int32` and `uint32` are the same plain (non-ZigZag) varint for values a
+//! `Timebase` can hold — both are non-negative and at most `i32::MAX` — so the
+//! bytes are unchanged in both directions. `sint32` would have been the
+//! silent break: ZigZag re-encodes every value.
 
-use core::num::NonZeroU32;
+use core::num::NonZeroI32;
 
 use ::buffa::{
   DecodeContext, DecodeError, DefaultInstance, EncodeSink, Message, SizeCache,
   bytes::Buf,
   encoding::{Tag, WireType, encode_varint, skip_field_depth, varint_len},
   types::{
-    decode_int64, decode_uint32, encode_int64, encode_uint32, int64_encoded_len, uint32_encoded_len,
+    decode_int32, decode_int64, encode_int32, encode_int64, int32_encoded_len, int64_encoded_len,
   },
 };
 
-use crate::{TimeRange, Timebase, Timestamp};
+use crate::{DEN_ONE, TimeRange, Timebase, Timestamp};
 
 const VARINT: u8 = WireType::Varint as u8;
 const LEN: u8 = WireType::LengthDelimited as u8;
 
 // ----------------------------------------------------------------------------
-// Timebase — leaf message { uint32 num = 1; uint32 den = 2; }
+// Timebase — leaf message { int32 num = 1; int32 den = 2; }
 // ----------------------------------------------------------------------------
 
 impl DefaultInstance for Timebase {
@@ -44,14 +50,14 @@ impl Message for Timebase {
   // therefore decode back as `num == 1` and break round-trip for e.g.
   // `Timebase::new(0, _)`. Both tags are single-byte (fields 1 and 2 < 16).
   fn compute_size(&self, _cache: &mut SizeCache) -> u32 {
-    2 + uint32_encoded_len(self.num()) as u32 + uint32_encoded_len(self.den().get()) as u32
+    2 + int32_encoded_len(self.num()) as u32 + int32_encoded_len(self.den().get()) as u32
   }
 
   fn write_to(&self, _cache: &mut SizeCache, buf: &mut impl EncodeSink) {
     Tag::new(1, WireType::Varint).encode(buf);
-    encode_uint32(self.num(), buf);
+    encode_int32(self.num(), buf);
     Tag::new(2, WireType::Varint).encode(buf);
-    encode_uint32(self.den().get(), buf);
+    encode_int32(self.den().get(), buf);
   }
 
   fn merge_field(
@@ -69,7 +75,12 @@ impl Message for Timebase {
             actual: tag.wire_type() as u8,
           });
         }
-        let num = decode_uint32(buf)?;
+        // `Timebase::new` panics on a negative numerator, so decode must not
+        // hand it one. Our own encoder never writes a negative; a peer can,
+        // either directly or by writing a `uint32` above `i32::MAX` that
+        // `decode_int32` truncates into the negative half. Clamp to the
+        // smallest legal numerator so decode stays total, as `den` does.
+        let num = decode_int32(buf)?.max(0);
         *self = Timebase::new(num, self.den());
       }
       2 => {
@@ -80,9 +91,12 @@ impl Message for Timebase {
             actual: tag.wire_type() as u8,
           });
         }
-        // den is NonZeroU32; a malformed 0 on the wire (never produced
-        // by our own encoder) is clamped to 1 to keep decode total.
-        let den = NonZeroU32::new(decode_uint32(buf)?).unwrap_or(NonZeroU32::MIN);
+        // A malformed den — zero, or negative by the same route as `num`
+        // above — is clamped to 1 to keep decode total. `NonZeroI32::MIN` is
+        // `i32::MIN`, so the clamp target is spelled out as `DEN_ONE`.
+        let den = NonZeroI32::new(decode_int32(buf)?)
+          .filter(|d| d.get() > 0)
+          .unwrap_or(DEN_ONE);
         *self = Timebase::new(self.num(), den);
       }
       _ => skip_field_depth(tag, buf, ctx.depth())?,
@@ -276,8 +290,8 @@ impl Message for Timestamp {
 mod tests {
   use super::*;
 
-  fn nz(n: u32) -> NonZeroU32 {
-    NonZeroU32::new(n).unwrap()
+  fn nz(n: i32) -> NonZeroI32 {
+    NonZeroI32::new(n).unwrap()
   }
 
   // ---- Timebase ----
@@ -310,7 +324,7 @@ mod tests {
   fn timebase_field2_wrong_wire_type_errors() {
     let mut buf: Vec<u8> = Vec::new();
     Tag::new(1, WireType::Varint).encode(&mut buf);
-    encode_uint32(5, &mut buf);
+    encode_int32(5, &mut buf);
     Tag::new(2, WireType::LengthDelimited).encode(&mut buf);
     encode_varint(0, &mut buf);
     let err = <Timebase as Message>::decode_from_slice(&buf).unwrap_err();
@@ -325,21 +339,66 @@ mod tests {
   fn timebase_den_zero_is_clamped_to_one() {
     let mut buf: Vec<u8> = Vec::new();
     Tag::new(1, WireType::Varint).encode(&mut buf);
-    encode_uint32(7, &mut buf);
+    encode_int32(7, &mut buf);
     Tag::new(2, WireType::Varint).encode(&mut buf);
-    encode_uint32(0, &mut buf); // malformed den == 0 on the wire
+    encode_int32(0, &mut buf); // malformed den == 0 on the wire
     let tb = <Timebase as Message>::decode_from_slice(&buf).expect("decodes with clamp");
     assert_eq!(tb.num(), 7);
     assert_eq!(tb.den().get(), 1);
   }
 
   #[test]
+  fn timebase_negative_fields_are_clamped() {
+    // A peer writing `uint32` values above `i32::MAX` produces varints that
+    // `decode_int32` truncates into the negative half. Both fields clamp to
+    // their smallest legal value rather than panicking in `Timebase::new`.
+    let mut buf: Vec<u8> = Vec::new();
+    Tag::new(1, WireType::Varint).encode(&mut buf);
+    encode_int32(-7, &mut buf);
+    Tag::new(2, WireType::Varint).encode(&mut buf);
+    encode_int32(-9, &mut buf);
+    let tb = <Timebase as Message>::decode_from_slice(&buf).expect("decodes with clamp");
+    assert_eq!(tb.num(), 0);
+    assert_eq!(tb.den().get(), 1);
+  }
+
+  #[test]
+  fn timebase_wire_bytes_are_unchanged_by_the_signed_fields() {
+    // Golden bytes captured from the `uint32` encoding this type used before
+    // `num`/`den` became signed. `int32` and `uint32` are the same plain
+    // varint for non-negative values, so the encoding must not have moved —
+    // and old bytes must still decode to the same value.
+    for (tb, golden) in [
+      (
+        Timebase::new(30_000, nz(1001)),
+        &b"\x08\xb0\xea\x01\x10\xe9\x07"[..],
+      ),
+      (Timebase::new(0, nz(1)), &b"\x08\x00\x10\x01"[..]),
+      (
+        Timebase::new(1, nz(48_000)),
+        &b"\x08\x01\x10\x80\xf7\x02"[..],
+      ),
+      (Timebase::new(1, nz(1)), &b"\x08\x01\x10\x01"[..]),
+      (
+        Timebase::new(i32::MAX, nz(i32::MAX)),
+        &b"\x08\xff\xff\xff\xff\x07\x10\xff\xff\xff\xff\x07"[..],
+      ),
+    ] {
+      assert_eq!(tb.encode_to_vec(), golden, "encoding moved for {tb:?}");
+      assert_eq!(
+        <Timebase as Message>::decode_from_slice(golden).expect("golden decodes"),
+        tb
+      );
+    }
+  }
+
+  #[test]
   fn timebase_unknown_field_is_skipped() {
     let mut buf: Vec<u8> = Vec::new();
     Tag::new(1, WireType::Varint).encode(&mut buf);
-    encode_uint32(2, &mut buf);
+    encode_int32(2, &mut buf);
     Tag::new(2, WireType::Varint).encode(&mut buf);
-    encode_uint32(3, &mut buf);
+    encode_int32(3, &mut buf);
     Tag::new(7, WireType::Varint).encode(&mut buf); // unknown field → skip_field_depth
     encode_varint(99, &mut buf);
     let tb = <Timebase as Message>::decode_from_slice(&buf).expect("unknown field skipped");

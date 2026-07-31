@@ -6,6 +6,49 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Changed
+
+- **Breaking:** `Timebase`'s numerator and denominator are now signed —
+  `num: u32 → i32` and `den: NonZeroU32 → NonZeroI32`. FFmpeg's `AVRational`
+  is a pair of C `int`s, so a `u32` numerator or denominator above `i32::MAX`
+  was representable but could not round-trip into an `AVRational` — usable in
+  Rust, unusable at the boundary with the decoder library this crate exists to
+  serve. `i32` is also a native `INTEGER` on PostgreSQL, MySQL and SQLite,
+  whereas `sqlx` has no `Type<Postgres>`/`Encode<Postgres>` for `u32` at all.
+  `new`, `try_new`, `num`, `den`, `with_num`, `with_den`, `set_num` and
+  `set_den` all change signature.
+- **Breaking:** `Timebase::new` now panics on `num < 0` or `den < 0`.
+  `NonZeroI32` carries only the non-zero half of what `NonZeroU32` guaranteed,
+  so the sign half moved into the constructor; the setters route through it so
+  there is one enforcement site. A zero numerator remains legal (a degenerate
+  timebase, still not a valid rescale target).
+
+### Added
+
+- `Timebase::try_new(num, den) -> Option<Self>` — fallible counterpart to
+  `Timebase::new`, mirroring `TimeRange::try_new`.
+
+### Fixed
+
+- Deserializing a `Timebase` can no longer produce a value the constructor
+  would reject. serde's derive assigns fields directly, and the field types no
+  longer make a negative numerator or denominator unrepresentable, so both
+  fields are validated on the way in.
+
+### Wire compatibility
+
+- **The buffa wire format is unchanged.** The two fields move from protobuf
+  `uint32` to `int32`, which is the same plain (non-ZigZag) varint for every
+  value a `Timebase` can hold; bytes encoded by earlier versions still decode
+  to the same value, and a golden-bytes test pins this. Values above
+  `i32::MAX` written by an older peer decode to the smallest legal value
+  rather than panicking — they were never representable in the new type.
+- **The serde representation is unchanged** for all in-range values: the
+  `numerator`/`denominator` field names and their JSON number encoding are
+  untouched.
+
 ## [0.1.10]
 
 ### Changed
