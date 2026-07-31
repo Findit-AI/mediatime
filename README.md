@@ -5,10 +5,10 @@
 
 Exact-integer rational time types for media pipelines — FFmpeg-style `Timebase`, `Timestamp`, and `TimeRange` for Rust. `no_std` by default, zero dependencies, `const fn` throughout.
 
-[<img alt="github" src="https://img.shields.io/badge/github-findit--ai/mediatime-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
+[<img alt="github" src="https://img.shields.io/badge/github-findit--studio/mediatime-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
 <img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2F327b2a8aef9003246e45c6e47fe63937%2Fraw%2Fmediatime" height="22">
-[<img alt="Build" src="https://img.shields.io/github/actions/workflow/status/findit-ai/mediatime/ci.yml?logo=Github-Actions&style=for-the-badge" height="22">][CI-url]
-[<img alt="codecov" src="https://img.shields.io/codecov/c/gh/findit-ai/mediatime?style=for-the-badge&token=6R3QFWRWHL&logo=codecov" height="22">][codecov-url]
+[<img alt="Build" src="https://img.shields.io/github/actions/workflow/status/findit-studio/mediatime/ci.yml?logo=Github-Actions&style=for-the-badge" height="22">][CI-url]
+[<img alt="codecov" src="https://img.shields.io/codecov/c/gh/findit-studio/mediatime?style=for-the-badge&token=6R3QFWRWHL&logo=codecov" height="22">][codecov-url]
 
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-mediatime-66c2a5?style=for-the-badge&labelColor=555555&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">][doc-url]
 [<img alt="crates.io" src="https://img.shields.io/crates/v/mediatime?style=for-the-badge&logo=data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iaXNvLTg4NTktMSI/Pg0KPCEtLSBHZW5lcmF0b3I6IEFkb2JlIElsbHVzdHJhdG9yIDE5LjAuMCwgU1ZHIEV4cG9ydCBQbHVnLUluIC4gU1ZHIFZlcnNpb246IDYuMDAgQnVpbGQgMCkgIC0tPg0KPHN2ZyB2ZXJzaW9uPSIxLjEiIGlkPSJMYXllcl8xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB4PSIwcHgiIHk9IjBweCINCgkgdmlld0JveD0iMCAwIDUxMiA1MTIiIHhtbDpzcGFjZT0icHJlc2VydmUiPg0KPGc+DQoJPGc+DQoJCTxwYXRoIGQ9Ik0yNTYsMEwzMS41MjgsMTEyLjIzNnYyODcuNTI4TDI1Niw1MTJsMjI0LjQ3Mi0xMTIuMjM2VjExMi4yMzZMMjU2LDB6IE0yMzQuMjc3LDQ1Mi41NjRMNzQuOTc0LDM3Mi45MTNWMTYwLjgxDQoJCQlsMTU5LjMwMyw3OS42NTFWNDUyLjU2NHogTTEwMS44MjYsMTI1LjY2MkwyNTYsNDguNTc2bDE1NC4xNzQsNzcuMDg3TDI1NiwyMDIuNzQ5TDEwMS44MjYsMTI1LjY2MnogTTQzNy4wMjYsMzcyLjkxMw0KCQkJbC0xNTkuMzAzLDc5LjY1MVYyNDAuNDYxbDE1OS4zMDMtNzkuNjUxVjM3Mi45MTN6IiBmaWxsPSIjRkZGIi8+DQoJPC9nPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPC9zdmc+DQo=" height="22">][crates-url]
@@ -48,6 +48,7 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 - **Hash agrees with Eq.** Hashes the reduced-form rational, so equal rationals hash identically and you can use these types as `HashMap` keys.
 - **FFmpeg-style utilities.** `rescale_pts` (a.k.a. `av_rescale_q`), `frames_to_duration`, `duration_to_pts`, `duration_since`, `saturating_sub_duration`.
 - **`TimeRange` interpolation.** Linear midpoint (`interpolate(t)`) for placing an event somewhere between fade-out and fade-in frames, with `t ∈ [0, 1]` clamped.
+- **`Display` for logs.** `{}` is readable — `1/1000`, `0:00:00.137`, `[0:00:01.500, 0:00:03.250)`; `{:#}` is exact — `12345 @ 1/90000`, `[1500, 3250) @ 1/1000`.
 - **`no_std` + `no_alloc` library.** The library builds without `std` and `alloc`; tests use `std`.
 - **`const fn` throughout.** Build `Timebase` / `Timestamp` / `TimeRange` in `const` context.
 
@@ -79,13 +80,20 @@ assert_eq!(ntsc.frames_to_duration(30_000), Duration::from_secs(1001));
 let r = TimeRange::new(100, 500, ms);
 assert_eq!(r.interpolate(0.5).pts(), 300);
 assert_eq!(r.duration(), Duration::from_millis(400));
+
+// `Display` renders for humans; `{:#}` renders the exact stored value.
+assert_eq!(format!("{ms}"), "1/1000");
+assert_eq!(format!("{}",  Timestamp::new(12_345, mpegts)), "0:00:00.137");
+assert_eq!(format!("{:#}", Timestamp::new(12_345, mpegts)), "12345 @ 1/90000");
+assert_eq!(format!("{r}"),  "[0:00:00.100, 0:00:00.500)");
+assert_eq!(format!("{r:#}"), "[100, 500) @ 1/1000");
 ```
 
 ## Installation
 
 ```toml
 [dependencies]
-mediatime = "0.1"
+mediatime = "0.2"
 ```
 
 ## MSRV
@@ -101,8 +109,8 @@ See [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT) for details.
 
 Copyright (c) 2026 FinDIT Studio authors.
 
-[Github-url]: https://github.com/findit-ai/mediatime/
-[CI-url]: https://github.com/findit-ai/mediatime/actions/workflows/ci.yml
+[Github-url]: https://github.com/findit-studio/mediatime/
+[CI-url]: https://github.com/findit-studio/mediatime/actions/workflows/ci.yml
 [doc-url]: https://docs.rs/mediatime
 [crates-url]: https://crates.io/crates/mediatime
-[codecov-url]: https://app.codecov.io/gh/findit-ai/mediatime/
+[codecov-url]: https://app.codecov.io/gh/findit-studio/mediatime/

@@ -24,11 +24,61 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so the sign half moved into the constructor; the setters route through it so
   there is one enforcement site. A zero numerator remains legal (a degenerate
   timebase, still not a valid rescale target).
+- Bump `buffa` dependency from `0.8` to `0.9`. buffa 0.9 replaced the
+  `BufMut` bound on `Message::write_to` with its new `EncodeSink` trait, so
+  the three hand-written `write_to` impls change one parameter type; every
+  `BufMut` implementor is an `EncodeSink` through a blanket impl, so callers
+  passing `Vec<u8>`/`BytesMut` are unaffected. Consumers that bump to
+  `buffa 0.9` must also bump their `mediatime` floor to `0.2.0` so a single
+  `buffa` version stays in the dependency graph.
+- Bump `quickcheck-richderive` dependency from `0.3` to `0.4`. The derive's
+  0.4.0 is a one-dependency release — `syn 2 → syn 3` — forced by syn 3
+  replacing `Signature::unsafety: Option<Token![unsafe]>` with the tri-state
+  `Signature::safety` that Rust 2024's `unsafe extern` needs. It changes no
+  emitted token and no diagnostic, so the three derived
+  `impl quickcheck::Arbitrary` blocks on `Timebase`, `Timestamp` and
+  `TimeRange` expand byte-for-byte as before; the bump is confined to the
+  optional `quickcheck` feature and moves no public API, no wire format and
+  no runtime behaviour. It does drop `syn 2` from the normal dependency
+  graph, leaving `syn 3` as the only `syn` a consumer compiles for
+  mediatime itself.
 
 ### Added
 
 - `Timebase::try_new(num, den) -> Option<Self>` — fallible counterpart to
   `Timebase::new`, mirroring `TimeRange::try_new`.
+- `Display` for `Timebase`, `Timestamp` and `TimeRange`, each with a readable
+  default form and an exact alternate form under `{:#}`:
+
+  | type | `{}` | `{:#}` |
+  |---|---|---|
+  | `Timebase` | `1/1000` | `1/1000` |
+  | `Timestamp` | `0:00:00.137` | `12345 @ 1/90000` |
+  | `TimeRange` | `[0:00:01.500, 0:00:03.250)` | `[1500, 3250) @ 1/1000` |
+
+  `Timebase` prints the form proposed in the request, unreduced — the timebase
+  a stream declared is the one worth reading in a log, and `2/4` would
+  otherwise be indistinguishable from `1/2`.
+
+  `Timestamp` diverges from `video-rs`, which prints the unreduced rational
+  (`12345/90000 secs`) in this position. Readable log messages were the point
+  of the request, and that form makes the reader do the division; the rational
+  stays available under `{:#}`. Hours are unpadded and unbounded
+  (`123:45:06.789`), minutes and seconds are two digits, milliseconds three,
+  and a negative PTS signs the whole rendering (`-0:00:01.500`) since pre-roll
+  and edit lists produce one. The value is truncated toward zero at
+  millisecond resolution, as `rescale_pts` truncates, so `{}` is lossy in both
+  precision and timebase — `{:#}` and the derived `Debug` are the exact forms.
+
+  `TimeRange` renders `[…)` because the interval is half-open, so the notation
+  carries the semantics the type documents; `{:#}` names the shared timebase
+  once, after both endpoints.
+
+  Nothing allocates: the impls write directly into the `Formatter`, so the
+  crate remains `no_std` with no `alloc`. One consequence is documented on each
+  impl — width and alignment flags (`{:>12}`) are ignored, because honouring
+  them means measuring the finished string and there is no buffer to build one
+  in.
 
 ### Fixed
 
@@ -39,29 +89,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Wire compatibility
 
-- **The buffa wire format is unchanged.** The two fields move from protobuf
-  `uint32` to `int32`, which is the same plain (non-ZigZag) varint for every
-  value a `Timebase` can hold; bytes encoded by earlier versions still decode
-  to the same value, and a golden-bytes test pins this. Values above
+- **The buffa wire format is unchanged.** The two `Timebase` fields move from
+  protobuf `uint32` to `int32`, which is the same plain (non-ZigZag) varint for
+  every value a `Timebase` can hold; bytes encoded by earlier versions still
+  decode to the same value, and a golden-bytes test pins this. Values above
   `i32::MAX` written by an older peer decode to the smallest legal value
   rather than panicking — they were never representable in the new type.
+- **The buffa 0.9 encoder swap is byte-for-byte transparent** as well: the tag,
+  varint and length-delimited encoders emit the same bytes through `EncodeSink`
+  as they did through `BufMut`, and bytes written under buffa 0.6/0.7/0.8 still
+  decode.
 - **The serde representation is unchanged** for all in-range values: the
   `numerator`/`denominator` field names and their JSON number encoding are
   untouched.
-
-## [0.1.10]
-
-### Changed
-
-- Bump `buffa` dependency from `0.8` to `0.9`. buffa 0.9 replaced the
-  `BufMut` bound on `Message::write_to` with its new `EncodeSink` trait, so
-  the three hand-written `write_to` impls change one parameter type; every
-  `BufMut` implementor is an `EncodeSink` through a blanket impl, so callers
-  passing `Vec<u8>`/`BytesMut` are unaffected. **The wire format is
-  unchanged** — the tag, varint and length-delimited encoders emit the same
-  bytes, and bytes written under buffa 0.6/0.7/0.8 still decode. Consumers
-  that bump to `buffa 0.9` must also bump their `mediatime` floor to
-  `0.1.10` so a single `buffa` version stays in the dependency graph.
 
 ## [0.1.8] — 2026-06-02
 

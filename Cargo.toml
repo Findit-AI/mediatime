@@ -2,8 +2,8 @@
 name = "mediatime"
 version = "0.2.0"
 edition = "2024"
-repository = "https://github.com/findit-ai/mediatime"
-homepage = "https://github.com/findit-ai/mediatime"
+repository = "https://github.com/findit-studio/mediatime"
+homepage = "https://github.com/findit-studio/mediatime"
 documentation = "https://docs.rs/mediatime"
 description = "Exact-integer rational time types for media pipelines — FFmpeg-style Timebase, Timestamp, and TimeRange. no_std, zero dependencies, const fn."
 license = "MIT OR Apache-2.0"
@@ -25,8 +25,8 @@ arbitrary = ["dep:arbitrary"]
 # Native `quickcheck::Arbitrary` for `Timebase`, `Timestamp`, `TimeRange` via
 # the `quickcheck-richderive` derive — each type carries
 # `#[cfg_attr(feature = "quickcheck", derive(::quickcheck_richderive::Arbitrary),
-# quickcheck(with = "…"))]` and a `fn(&mut Gen) -> Self` helper preserves the
-# invariants (non-zero denom, non-negative pts, well-formed range).
+# quickcheck(arbitrary = "…"))]` and a `fn(&mut Gen) -> Self` helper preserves
+# the invariants (non-zero denom, non-negative pts, well-formed range).
 quickcheck = ["dep:quickcheck", "dep:quickcheck-richderive"]
 buffa = ["dep:buffa"]
 
@@ -36,10 +36,12 @@ serde = { version = "1", optional = true, default-features = false, features = [
 arbitrary = { version = "1", optional = true, default-features = false }
 quickcheck = { version = "1", optional = true, default-features = false }
 # `quickcheck-richderive` is the proc-macro that emits native
-# `impl quickcheck::Arbitrary` blocks; the container-level `with = "…"`
-# attribute routes generation through `quickcheck_impls::*` helpers so
-# invariants stay sound.
-quickcheck-richderive = { version = "0.3", optional = true }
+# `impl quickcheck::Arbitrary` blocks; the container-level `arbitrary = "…"`
+# attribute routes generation through the `quickcheck_impls::*` helpers so
+# invariants stay sound. Not `with = "…"`: since the derive's 0.2.0 that names
+# a *module* supplying both `arbitrary` and `shrink`, and the helpers here are
+# plain functions.
+quickcheck-richderive = { version = "0.4", optional = true }
 buffa = { version = "0.9", default-features = false, optional = true }
 
 [dev-dependencies]
