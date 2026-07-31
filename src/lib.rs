@@ -15,6 +15,7 @@ extern crate std;
 
 use core::{
   cmp::Ordering,
+  fmt,
   hash::{Hash, Hasher},
   num::NonZeroI32,
   time::Duration,
@@ -328,6 +329,27 @@ impl PartialOrd for Timebase {
   }
 }
 
+/// Writes the rational as `num/den` — `1/1000`, `1/90000`, `30000/1001`.
+///
+/// The stored form is printed, **not** the reduced one: `2/4` prints as `2/4`
+/// even though it equals `1/2` and hashes with it. In a log the interesting
+/// fact is which timebase a stream declared, and reducing would erase the
+/// difference between a container that said `30000/1001` and one that said
+/// `60000/2002`.
+///
+/// Unlike [`Timestamp`]'s and [`TimeRange`]'s, this rendering is exact — a
+/// numerator and a denominator are the whole value — so `{:#}` renders
+/// identically; there is nothing to expand into.
+///
+/// Width and alignment flags (`{:>12}`) are ignored: honouring them means
+/// measuring the finished string, and this crate has no `alloc` to build one
+/// in.
+impl fmt::Display for Timebase {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}/{}", self.num, self.den.get())
+  }
+}
+
 /// A presentation timestamp, expressed as a PTS value in units of an associated [`Timebase`].
 ///
 /// # Equality and ordering
@@ -545,6 +567,44 @@ impl PartialOrd for Timestamp {
   }
 }
 
+/// Writes the instant on the clock as `H:MM:SS.mmm` — `0:00:00.137` — so a log
+/// line reads as a time instead of as a division to carry out. `video-rs`
+/// prints the unreduced rational (`12345/90000 secs`) in the same position;
+/// the readable form is the default here because readable log messages are
+/// what [the request this impl answers][issue] asked for, and the rational is
+/// still one `#` away.
+///
+/// Hours are unpadded and unbounded — `123:45:06.789` is a normal rendering,
+/// not an overflow. Minutes and seconds are two digits, milliseconds three. A
+/// negative PTS (pre-roll, or an edit list) signs the whole rendering:
+/// `-0:00:01.500`.
+///
+/// The instant is **truncated toward zero** at millisecond resolution, as
+/// [`Timebase::rescale_pts`] truncates. So this form is lossy twice over: below
+/// a millisecond nothing survives, and the timebase the PTS was counted in is
+/// not shown at all. One consequence is worth stating outright — a PTS smaller
+/// in magnitude than one millisecond renders `0:00:00.000` *without* a sign,
+/// because the value being printed is zero and a signed zero would claim a
+/// precision this form does not have.
+///
+/// `{:#}` is the exact form: the stored PTS beside its timebase, as
+/// `12345 @ 1/90000`. So is the derived [`Debug`].
+///
+/// Width and alignment flags (`{:>12}`) are ignored, so this will not line a
+/// log up into columns: honouring them means measuring the finished string,
+/// and this crate has no `alloc` to build one in.
+///
+/// [issue]: https://github.com/findit-studio/mediatime/issues/13
+impl fmt::Display for Timestamp {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if f.alternate() {
+      write!(f, "{} @ {}", self.pts, self.timebase)
+    } else {
+      write_clock(f, self.pts, self.timebase)
+    }
+  }
+}
+
 /// A half-open time range `[start, end)` in a given [`Timebase`].
 ///
 /// Represents the extent of a detected event — for example, a fade-out →
@@ -754,6 +814,36 @@ impl TimeRange {
   }
 }
 
+/// Writes both endpoints as clocks inside interval notation:
+/// `[0:00:01.500, 0:00:03.250)`.
+///
+/// The mismatched brackets are the point rather than decoration. This type is
+/// half-open — closed at `start`, open at `end` — and `[…)` is the notation
+/// that says so, where a dash or an ellipsis would leave a reader to guess
+/// whether `end` is inside. The rendering therefore teaches the semantics the
+/// type documents.
+///
+/// `{:#}` prints the raw endpoints and names the shared timebase **once**,
+/// after both — `[1500, 3250) @ 1/1000` — because both endpoints are in one
+/// timebase by construction and repeating it would suggest they need not be.
+/// The derived [`Debug`] is exact as well.
+///
+/// Each endpoint is rendered by [`Timestamp`]'s `Display`, and inherits its
+/// truncation, its lossiness, and its indifference to width and alignment
+/// flags.
+impl fmt::Display for TimeRange {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if f.alternate() {
+      return write!(f, "[{}, {}) @ {}", self.start, self.end, self.timebase);
+    }
+    f.write_str("[")?;
+    write_clock(f, self.start, self.timebase)?;
+    f.write_str(", ")?;
+    write_clock(f, self.end, self.timebase)?;
+    f.write_str(")")
+  }
+}
+
 /// Field validators for [`Timebase`]'s derived `Deserialize`.
 ///
 /// The derive assigns fields directly, bypassing [`Timebase::new`]. While the
@@ -806,6 +896,50 @@ const fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
     a = t;
   }
   a
+}
+
+/// Renders `pts` in units of `timebase` as `H:MM:SS.mmm`, signed as a whole
+/// when the instant is before zero. Shared by [`Timestamp`]'s and
+/// [`TimeRange`]'s `Display`, which is where the format is documented.
+///
+/// Writes straight into the [`fmt::Formatter`]: the crate is `no_std` without
+/// `alloc`, so there is no intermediate `String` to build the string in.
+fn write_clock(f: &mut fmt::Formatter<'_>, pts: i64, timebase: Timebase) -> fmt::Result {
+  const MS_PER_SEC: u128 = 1_000;
+  const SECS_PER_MIN: u128 = 60;
+  const MINS_PER_HOUR: u128 = 60;
+
+  // Promoted to `i128` for the same reason `rescale_pts` promotes: the product
+  // overflows `i64` long before the operands are unreasonable. The bound is
+  // generous — |pts| ≤ 2^63, `num` < 2^31 by the constructor's sign invariant,
+  // and the millisecond factor is < 2^10, so the numerator stays under 2^104
+  // against `i128`'s 2^127. Dividing by `den ≥ 1` cannot grow it.
+  //
+  // One truncating division, toward zero, matching `rescale_pts`. `den` is
+  // `NonZeroI32`, so a zero numerator (a legal degenerate timebase) collapses
+  // every PTS onto zero rather than dividing by zero.
+  let total_ms =
+    (pts as i128) * (timebase.num as i128) * (MS_PER_SEC as i128) / (timebase.den.get() as i128);
+
+  // `unsigned_abs`, not negation: the magnitude of the most negative value of a
+  // signed type is not representable in it, so `-total_ms` would overflow at
+  // the bottom of the range — and `Timestamp::new(i64::MIN, …)` is reachable,
+  // `i64::MIN` being FFmpeg's `AV_NOPTS_VALUE`. Carrying the sign separately
+  // sidesteps the question entirely.
+  let negative = total_ms < 0;
+  let magnitude_ms = total_ms.unsigned_abs();
+
+  let millis = magnitude_ms % MS_PER_SEC;
+  let total_secs = magnitude_ms / MS_PER_SEC;
+  let secs = total_secs % SECS_PER_MIN;
+  let total_mins = total_secs / SECS_PER_MIN;
+  let mins = total_mins % MINS_PER_HOUR;
+  let hours = total_mins / MINS_PER_HOUR;
+
+  if negative {
+    f.write_str("-")?;
+  }
+  write!(f, "{hours}:{mins:02}:{secs:02}.{millis:03}")
 }
 
 /// `fn(&mut quickcheck::Gen) -> T` helpers consumed by the per-type
@@ -1395,6 +1529,180 @@ mod tests {
   fn time_range_new_panics_on_negative_duration() {
     let tb = Timebase::new(1, nz(1000));
     TimeRange::new(500, 100, tb);
+  }
+
+  #[test]
+  fn timebase_display_is_num_over_den() {
+    // The form proposed in the issue this impl answers, adopted verbatim:
+    // https://github.com/findit-studio/mediatime/issues/13
+    let timebase = Timebase::new(1, nz(1000));
+    assert_eq!(format!("{timebase}"), "1/1000");
+    assert_eq!(format!("{timebase:#}"), "1/1000");
+
+    assert_eq!(format!("{}", Timebase::new(1, nz(90_000))), "1/90000");
+    assert_eq!(format!("{}", Timebase::new(30_000, nz(1001))), "30000/1001");
+    assert_eq!(format!("{}", Timebase::new(0, nz(3))), "0/3");
+  }
+
+  #[test]
+  fn timebase_display_does_not_reduce() {
+    // `2/4 == 1/2` and the two hash alike, but Display shows what the stream
+    // declared rather than the canonical form.
+    let coarse = Timebase::new(2, nz(4));
+    assert_eq!(coarse, Timebase::new(1, nz(2)));
+    assert_eq!(format!("{coarse}"), "2/4");
+    assert_eq!(format!("{coarse:#}"), "2/4");
+  }
+
+  #[test]
+  fn timestamp_display_reads_as_a_clock() {
+    let mpeg = Timebase::new(1, nz(90_000));
+    assert_eq!(format!("{}", Timestamp::new(12_345, mpeg)), "0:00:00.137");
+    assert_eq!(
+      format!("{:#}", Timestamp::new(12_345, mpeg)),
+      "12345 @ 1/90000"
+    );
+
+    let ms = Timebase::new(1, nz(1000));
+    assert_eq!(format!("{}", Timestamp::new(0, ms)), "0:00:00.000");
+    assert_eq!(format!("{:#}", Timestamp::new(0, ms)), "0 @ 1/1000");
+    assert_eq!(format!("{}", Timestamp::new(3_661_500, ms)), "1:01:01.500");
+
+    let audio = Timebase::new(1, nz(48_000));
+    assert_eq!(format!("{}", Timestamp::new(48_000, audio)), "0:00:01.000");
+  }
+
+  #[test]
+  fn timestamp_display_truncates_toward_zero() {
+    // 44999/90000 s = 0.4999888…; rounding would give .500.
+    let mpeg = Timebase::new(1, nz(90_000));
+    assert_eq!(format!("{}", Timestamp::new(44_999, mpeg)), "0:00:00.499");
+    assert_eq!(format!("{}", Timestamp::new(-44_999, mpeg)), "-0:00:00.499");
+  }
+
+  #[test]
+  fn timestamp_display_signs_the_whole_rendering() {
+    // Negative PTS is ordinary here — pre-roll and edit lists produce it.
+    let ms = Timebase::new(1, nz(1000));
+    assert_eq!(format!("{}", Timestamp::new(-1500, ms)), "-0:00:01.500");
+    assert_eq!(format!("{:#}", Timestamp::new(-1500, ms)), "-1500 @ 1/1000");
+
+    // Under a millisecond the truncated value is zero, and a signed zero would
+    // claim a precision this form does not have — so the sign goes with it.
+    // `{:#}` still reports which side of zero the PTS was on.
+    let mpeg = Timebase::new(1, nz(90_000));
+    assert_eq!(format!("{}", Timestamp::new(-1, mpeg)), "0:00:00.000");
+    assert_eq!(format!("{:#}", Timestamp::new(-1, mpeg)), "-1 @ 1/90000");
+  }
+
+  #[test]
+  fn timestamp_display_survives_i64_min() {
+    // `i64::MIN` is FFmpeg's `AV_NOPTS_VALUE`, so it reaches this code in
+    // practice. Negating it to take a magnitude would overflow; `unsigned_abs`
+    // is why this renders instead of panicking.
+    let ms = Timebase::new(1, nz(1000));
+    let floor = Timestamp::new(i64::MIN, ms);
+    assert_eq!(format!("{floor}"), "-2562047788015:12:55.808");
+    assert_eq!(format!("{floor:#}"), "-9223372036854775808 @ 1/1000");
+
+    let ceiling = Timestamp::new(i64::MAX, ms);
+    assert_eq!(format!("{ceiling}"), "2562047788015:12:55.807");
+
+    let ntsc = Timebase::new(30_000, nz(1001));
+    assert_eq!(
+      format!("{}", Timestamp::new(i64::MIN, ntsc)),
+      "-76784648991465000:03:59.760"
+    );
+
+    // The widest intermediate this impl can form: `i64::MIN` against the
+    // largest numerator and the smallest denominator. |pts · num · 1000| is
+    // 104 bits here — the worst case over the whole input domain — which is
+    // what the `i128` promotion buys and what a 25-digit hour field costs.
+    let widest = Timebase::new(i32::MAX, nz(1));
+    assert_eq!(
+      format!("{}", Timestamp::new(i64::MIN, widest)),
+      "-5501955727595197878203114:22:56.000"
+    );
+  }
+
+  #[test]
+  fn timestamp_display_with_a_zero_numerator_timebase() {
+    // A zero numerator is a legal degenerate timebase (see `timebase_num_zero`)
+    // that maps every PTS onto the instant zero. The denominator is `NonZero`,
+    // so nothing here divides by zero.
+    let degenerate = Timebase::new(0, nz(3));
+    assert_eq!(
+      format!("{}", Timestamp::new(999_999, degenerate)),
+      "0:00:00.000"
+    );
+    assert_eq!(
+      format!("{:#}", Timestamp::new(999_999, degenerate)),
+      "999999 @ 0/3"
+    );
+    assert_eq!(
+      format!("{}", Timestamp::new(i64::MIN, degenerate)),
+      "0:00:00.000"
+    );
+  }
+
+  #[test]
+  fn timestamp_display_hours_are_unpadded_and_unbounded() {
+    // Hours are neither padded to two digits nor wrapped at 24 or 99.
+    let ms = Timebase::new(1, nz(1000));
+    assert_eq!(
+      format!("{}", Timestamp::new(445_506_789, ms)),
+      "123:45:06.789"
+    );
+    assert_eq!(format!("{}", Timestamp::new(9_000_000, ms)), "2:30:00.000");
+  }
+
+  #[test]
+  fn time_range_display_shows_a_half_open_interval() {
+    let ms = Timebase::new(1, nz(1000));
+    let range = TimeRange::new(1500, 3250, ms);
+    assert_eq!(format!("{range}"), "[0:00:01.500, 0:00:03.250)");
+    assert_eq!(format!("{range:#}"), "[1500, 3250) @ 1/1000");
+
+    // The timebase is named once because both endpoints share it.
+    let preroll = TimeRange::new(-1500, 3250, ms);
+    assert_eq!(format!("{preroll}"), "[-0:00:01.500, 0:00:03.250)");
+    assert_eq!(format!("{preroll:#}"), "[-1500, 3250) @ 1/1000");
+
+    let instant = TimeRange::instant(Timestamp::new(12_345, Timebase::new(1, nz(90_000))));
+    assert_eq!(format!("{instant}"), "[0:00:00.137, 0:00:00.137)");
+    assert_eq!(format!("{instant:#}"), "[12345, 12345) @ 1/90000");
+  }
+
+  #[test]
+  fn display_ignores_width_and_alignment() {
+    // Documented rather than accidental: padding means measuring the finished
+    // string, and there is no `alloc` here to build one in. Pinned so that a
+    // later change to `f.pad`-style formatting is a deliberate one.
+    let ms = Timebase::new(1, nz(1000));
+    assert_eq!(format!("{ms:>20}"), "1/1000");
+    assert_eq!(
+      format!(
+        "{:>20}",
+        Timestamp::new(12_345, Timebase::new(1, nz(90_000)))
+      ),
+      "0:00:00.137"
+    );
+    assert_eq!(
+      format!("{:>40}", TimeRange::new(1500, 3250, ms)),
+      "[0:00:01.500, 0:00:03.250)"
+    );
+  }
+
+  #[test]
+  fn alternate_display_recovers_what_the_clock_drops() {
+    // Two instants a hair apart in different timebases render the same clock;
+    // only `{:#}` and `Debug` tell them apart.
+    let a = Timestamp::new(12_345, Timebase::new(1, nz(90_000)));
+    let b = Timestamp::new(137, Timebase::new(1, nz(1000)));
+    assert_eq!(format!("{a}"), format!("{b}"));
+    assert_ne!(a, b);
+    assert_ne!(format!("{a:#}"), format!("{b:#}"));
+    assert_ne!(format!("{a:?}"), format!("{b:?}"));
   }
 }
 

@@ -48,6 +48,7 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 - **Hash agrees with Eq.** Hashes the reduced-form rational, so equal rationals hash identically and you can use these types as `HashMap` keys.
 - **FFmpeg-style utilities.** `rescale_pts` (a.k.a. `av_rescale_q`), `frames_to_duration`, `duration_to_pts`, `duration_since`, `saturating_sub_duration`.
 - **`TimeRange` interpolation.** Linear midpoint (`interpolate(t)`) for placing an event somewhere between fade-out and fade-in frames, with `t ∈ [0, 1]` clamped.
+- **`Display` for logs.** `{}` is readable — `1/1000`, `0:00:00.137`, `[0:00:01.500, 0:00:03.250)`; `{:#}` is exact — `12345 @ 1/90000`, `[1500, 3250) @ 1/1000`.
 - **`no_std` + `no_alloc` library.** The library builds without `std` and `alloc`; tests use `std`.
 - **`const fn` throughout.** Build `Timebase` / `Timestamp` / `TimeRange` in `const` context.
 
@@ -79,6 +80,13 @@ assert_eq!(ntsc.frames_to_duration(30_000), Duration::from_secs(1001));
 let r = TimeRange::new(100, 500, ms);
 assert_eq!(r.interpolate(0.5).pts(), 300);
 assert_eq!(r.duration(), Duration::from_millis(400));
+
+// `Display` renders for humans; `{:#}` renders the exact stored value.
+assert_eq!(format!("{ms}"), "1/1000");
+assert_eq!(format!("{}",  Timestamp::new(12_345, mpegts)), "0:00:00.137");
+assert_eq!(format!("{:#}", Timestamp::new(12_345, mpegts)), "12345 @ 1/90000");
+assert_eq!(format!("{r}"),  "[0:00:00.100, 0:00:00.500)");
+assert_eq!(format!("{r:#}"), "[100, 500) @ 1/1000");
 ```
 
 ## Installation

@@ -6,6 +6,43 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1]
+
+### Added
+
+- `Display` for `Timebase`, `Timestamp` and `TimeRange`, each with a readable
+  default form and an exact alternate form under `{:#}`:
+
+  | type | `{}` | `{:#}` |
+  |---|---|---|
+  | `Timebase` | `1/1000` | `1/1000` |
+  | `Timestamp` | `0:00:00.137` | `12345 @ 1/90000` |
+  | `TimeRange` | `[0:00:01.500, 0:00:03.250)` | `[1500, 3250) @ 1/1000` |
+
+  `Timebase` prints the form proposed in the request, unreduced — the timebase
+  a stream declared is the one worth reading in a log, and `2/4` would
+  otherwise be indistinguishable from `1/2`.
+
+  `Timestamp` diverges from `video-rs`, which prints the unreduced rational
+  (`12345/90000 secs`) in this position. Readable log messages were the point
+  of the request, and that form makes the reader do the division; the rational
+  stays available under `{:#}`. Hours are unpadded and unbounded
+  (`123:45:06.789`), minutes and seconds are two digits, milliseconds three,
+  and a negative PTS signs the whole rendering (`-0:00:01.500`) since pre-roll
+  and edit lists produce one. The value is truncated toward zero at
+  millisecond resolution, as `rescale_pts` truncates, so `{}` is lossy in both
+  precision and timebase — `{:#}` and the derived `Debug` are the exact forms.
+
+  `TimeRange` renders `[…)` because the interval is half-open, so the notation
+  carries the semantics the type documents; `{:#}` names the shared timebase
+  once, after both endpoints.
+
+  Nothing allocates: the impls write directly into the `Formatter`, so the
+  crate remains `no_std` with no `alloc`. One consequence is documented on each
+  impl — width and alignment flags (`{:>12}`) are ignored, because honouring
+  them means measuring the finished string and there is no buffer to build one
+  in.
+
 ## [0.2.0]
 
 ### Changed
