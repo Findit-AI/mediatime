@@ -47,6 +47,7 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 - **Value-based equality and ordering.** `1/2 == 2/4 == 3/6`; `Timestamp(1000, 1/1000) == Timestamp(90_000, 1/90_000)`. Cross-timebase `cmp` uses 128-bit cross-multiply — exact for any `i32` numerator/denominator with any `i64` PTS.
 - **Hash agrees with Eq.** Hashes the reduced-form rational, so equal rationals hash identically and you can use these types as `HashMap` keys.
 - **FFmpeg-style utilities.** `checked_rescale` / `saturating_rescale` (a.k.a. `av_rescale_q`, rounding to nearest with halfway cases away from zero, as FFmpeg's `AV_ROUND_NEAR_INF` does), `frames_to_duration`, `checked_duration_to_pts` / `checked_pts_to_duration`, `duration_since`, `saturating_sub_duration`. Every lossy conversion is spelled `checked_` or `saturating_` — there is no bare name whose overflow posture you have to remember.
+- **Signed spans.** `SignedDuration` is what the difference of two instants actually is — `later.signed_duration_since(&earlier)` — and `Duration` cannot hold it, being unsigned. It shifts an instant back again (`ts.checked_add_signed(span)`, `saturating_sub_signed`), adds and subtracts across timebases, and answers in the left operand's.
 - **Named timebases.** `Timebase::MILLIS`, `MPEG_90K`, `HZ_48K`, `NTSC_VIDEO`, `FILM_24` and the rest of the roster, each with the container or codec convention that declares it. `Timebase::from_name("MPEG_90K")` reads a name, `well_known_name()` writes one back, and `FromStr` accepts either a name or `num/den`.
 - **`TimeRange` interpolation.** Linear midpoint (`interpolate(t)`) for placing an event somewhere between fade-out and fade-in frames, with `t ∈ [0, 1]` clamped.
 - **`Display` for logs.** `{}` is readable — `1/1000`, `0:00:00.137`, `[0:00:01.500, 0:00:03.250)`; `{:#}` is exact — `12345 @ 1/90000`, `[1500, 3250) @ 1/1000`.
@@ -77,6 +78,12 @@ assert_eq!(a.duration_since(&b), Some(Duration::ZERO));
 // `av_rescale_q`-style conversion, rounding to the nearest tick.
 assert_eq!(ms.checked_rescale(500, mpegts), Some(45_000));
 assert_eq!(ms.saturating_rescale(500, mpegts), 45_000);
+
+// Point minus point is a vector: the difference of two instants is signed,
+// and shifting an instant by one crosses timebases on the way.
+let span = b.signed_duration_since(&Timestamp::new(45_000, mpegts));
+assert_eq!(span.ticks(), 45_000); // half a second, on the MPEG clock
+assert_eq!(a.checked_add_signed(span), Some(Timestamp::new(1_500, ms)));
 
 // Frame rate helpers — treat `Timebase` as fps and count frames.
 let ntsc = Timebase::new(30_000, NonZeroI32::new(1001).unwrap());

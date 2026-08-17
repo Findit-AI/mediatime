@@ -32,6 +32,17 @@ fn target_timebase((num, den): (u32, u32)) -> Timebase {
   Timebase::new((num % MAX + 1) as i32, nz((den % MAX + 1) as i32))
 }
 
+/// A `Timebase` drawn from a deliberately tiny pool: numerator in `0..3`,
+/// denominator in `1..4`.
+///
+/// The degenerate `0/den` — and two different spellings of it — come up often
+/// here and approximately never in a full-range draw, which is where the
+/// comparison laws are hardest and where an identical-timebase fast path can
+/// disagree with the cross-multiply.
+fn coarse_timebase((num, den): (u32, u32)) -> Timebase {
+  Timebase::new((num % 3) as i32, nz((den % 3 + 1) as i32))
+}
+
 /// The exact, unrounded quotient of a rescale as `(numerator, denominator)` —
 /// rebuilt here from the definition rather than borrowed from the
 /// implementation, so a property comparing against it tests the rounding
@@ -203,6 +214,107 @@ quickcheck! {
     match tb.checked_recip().and_then(Timebase::checked_recip) {
       Some(back) => format!("{back:?}") == format!("{tb:?}"),
       None => tb.num() == 0,
+    }
+  }
+
+  /// A span negated twice is the span it started from, and the timebase does
+  /// not move. `i64::MIN` ticks is the one span with no opposite.
+  fn negating_a_span_twice_returns_it(ticks: i64, tb: (u32, u32)) -> bool {
+    let span = SignedDuration::new(ticks, any_timebase(tb));
+    match span.checked_neg().and_then(SignedDuration::checked_neg) {
+      Some(back) => back == span,
+      None => ticks == i64::MIN,
+    }
+  }
+
+  /// `abs` is the magnitude: never backwards, either the span or its
+  /// negation, and already settled after one application.
+  fn abs_is_the_magnitude_of_a_span(ticks: i64, tb: (u32, u32)) -> bool {
+    let span = SignedDuration::new(ticks, any_timebase(tb));
+    match span.checked_abs() {
+      Some(magnitude) => {
+        !magnitude.is_negative()
+          && (magnitude == span || Some(magnitude) == span.checked_neg())
+          && magnitude.checked_abs() == Some(magnitude)
+      }
+      None => ticks == i64::MIN,
+    }
+  }
+
+  /// Adding a span and subtracting the same one returns what it started from
+  /// — exactly, both spans being counted in one timebase.
+  fn adding_a_span_and_subtracting_it_returns_the_first(a: i64, b: i64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let (x, y) = (SignedDuration::new(a, tb), SignedDuration::new(b, tb));
+    match x.checked_add(y) {
+      Some(sum) => sum.checked_sub(y) == Some(x),
+      None => true,
+    }
+  }
+
+  /// In one timebase the sum of two spans is exactly the sum of two `i64`s:
+  /// the counts are added, not converted, so neither rung can round.
+  fn spans_in_one_timebase_add_as_i64s(a: i64, b: i64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let (x, y) = (SignedDuration::new(a, tb), SignedDuration::new(b, tb));
+    x.checked_add(y).map(|sum| sum.ticks()) == a.checked_add(b)
+      && x.saturating_add(y).ticks() == a.saturating_add(b)
+      && x.checked_sub(y).map(|d| d.ticks()) == a.checked_sub(b)
+      && x.saturating_sub(y).ticks() == a.saturating_sub(b)
+  }
+
+  /// Rescaling spans is monotone, so it agrees with `cmp_semantic` — the law
+  /// the instant twin obeys, for the reason
+  /// `rescale_preserves_semantic_order` gives, including why the counts are
+  /// drawn as `i8`s.
+  fn rescaling_spans_preserves_semantic_order(a: (i8, u32, u32), b: (i8, u32, u32), to: (u32, u32)) -> bool {
+    let x = SignedDuration::new(a.0 as i64, any_timebase((a.1, a.2)));
+    let y = SignedDuration::new(b.0 as i64, any_timebase((b.1, b.2)));
+    let to = target_timebase(to);
+    let (rx, ry) = (x.rescale_to(to).ticks(), y.rescale_to(to).ticks());
+    match x.cmp_semantic(&y) {
+      Ordering::Less => rx <= ry,
+      Ordering::Greater => rx >= ry,
+      Ordering::Equal => rx == ry,
+    }
+  }
+
+  /// `cmp_semantic` is an order, degenerate timebases included — the case
+  /// `coarse_timebase` exists to reach, and the one where comparing counts
+  /// under an identical-timebase fast path would report an order the spans
+  /// do not have.
+  fn span_semantic_order_is_transitive(a: (i8, u32, u32), b: (i8, u32, u32), c: (i8, u32, u32)) -> bool {
+    let span =
+      |(t, num, den): (i8, u32, u32)| SignedDuration::new(t as i64, coarse_timebase((num, den)));
+    let (x, y, z) = (span(a), span(b), span(c));
+    !(x.cmp_semantic(&y).is_le() && y.cmp_semantic(&z).is_le()) || x.cmp_semantic(&z).is_le()
+  }
+
+  /// Every count of a degenerate `0/den` tick measures zero seconds, so all
+  /// such spans compare equal — to each other, however each is written, and
+  /// to a zero span anywhere else.
+  ///
+  /// Degenerate **by construction** rather than waited for: a full-range
+  /// numerator is zero approximately never, and the transitivity property
+  /// above misses this corner about a third of the time (measured against a
+  /// fast path with the degeneracy guard removed: 2 failures in 3 runs, where
+  /// this property failed 3 in 3). This is where such a fast path reports an
+  /// order the spans do not have.
+  fn every_span_in_a_degenerate_timebase_measures_zero(a: (i64, u32), b: (i64, u32), tb: (u32, u32)) -> bool {
+    let nowhere = |(ticks, den): (i64, u32)| SignedDuration::new(ticks, Timebase::new(0, nz((den % 4 + 1) as i32)));
+    let (x, y) = (nowhere(a), nowhere(b));
+    x.cmp_semantic(&y).is_eq() && x.cmp_semantic(&SignedDuration::new(0, any_timebase(tb))).is_eq()
+  }
+
+  /// Shifting an instant by a span and asking what span separates the two
+  /// returns the span — the law that makes the pair inverses.
+  fn a_shift_and_the_span_it_moved_by_are_inverses(pts: i64, ticks: i64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let ts = Timestamp::new(pts, tb);
+    let span = SignedDuration::new(ticks, tb);
+    match ts.checked_add_signed(span) {
+      Some(shifted) => shifted.checked_signed_duration_since(&ts) == Some(span),
+      None => true,
     }
   }
 }

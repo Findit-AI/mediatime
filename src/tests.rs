@@ -762,6 +762,366 @@ fn saturating_sub_duration_panics_on_a_degenerate_timebase() {
 }
 
 #[test]
+fn signed_duration_accessors_and_predicates() {
+  let ms = Timebase::MILLIS;
+  let backwards = SignedDuration::new(-1500, ms);
+  assert_eq!(backwards.ticks(), -1500);
+  assert_eq!(backwards.timebase(), ms);
+  assert!(backwards.is_negative());
+  assert!(!backwards.is_positive());
+  assert!(!backwards.is_zero());
+
+  let forwards = SignedDuration::new(1500, ms);
+  assert!(forwards.is_positive());
+  assert!(!forwards.is_negative());
+
+  let still = SignedDuration::new(0, ms);
+  assert!(still.is_zero());
+  assert!(!still.is_positive());
+  assert!(!still.is_negative());
+
+  // The default is the zero span, in the default timebase.
+  assert_eq!(SignedDuration::default().ticks(), 0);
+  assert_eq!(SignedDuration::default().timebase(), Timebase::default());
+}
+
+#[test]
+fn signed_duration_neg_and_abs() {
+  let ms = Timebase::MILLIS;
+  let backwards = SignedDuration::new(-1500, ms);
+  assert_eq!(backwards.checked_neg(), Some(SignedDuration::new(1500, ms)));
+  assert_eq!(backwards.saturating_neg(), SignedDuration::new(1500, ms));
+  assert_eq!(backwards.checked_abs(), Some(SignedDuration::new(1500, ms)));
+  assert_eq!(backwards.saturating_abs(), SignedDuration::new(1500, ms));
+
+  // Both keep the timebase; only the count moves.
+  assert_eq!(backwards.checked_neg().unwrap().timebase(), ms);
+
+  // `abs` differs from `neg` on a forward span: it is the identity.
+  let forwards = SignedDuration::new(1500, ms);
+  assert_eq!(forwards.checked_abs(), Some(forwards));
+  assert_eq!(forwards.checked_neg(), Some(backwards));
+}
+
+#[test]
+fn signed_duration_neg_and_abs_at_the_floor() {
+  // `i64::MIN` has no positive twin, which is the one input where the two
+  // rungs part: the checked one refuses, the saturating one clamps.
+  let floor = SignedDuration::new(i64::MIN, Timebase::MILLIS);
+  assert_eq!(floor.checked_neg(), None);
+  assert_eq!(floor.checked_abs(), None);
+  assert_eq!(floor.saturating_neg().ticks(), i64::MAX);
+  assert_eq!(floor.saturating_abs().ticks(), i64::MAX);
+}
+
+#[test]
+fn signed_duration_add_and_sub_in_one_timebase_are_exact() {
+  let ms = Timebase::MILLIS;
+  let a = SignedDuration::new(1500, ms);
+  let b = SignedDuration::new(-500, ms);
+  assert_eq!(a.checked_add(b), Some(SignedDuration::new(1000, ms)));
+  assert_eq!(a.saturating_add(b), SignedDuration::new(1000, ms));
+  assert_eq!(a.checked_sub(b), Some(SignedDuration::new(2000, ms)));
+  assert_eq!(a.saturating_sub(b), SignedDuration::new(2000, ms));
+
+  // Addition and subtraction undo each other exactly here.
+  assert_eq!(a.checked_add(b).unwrap().checked_sub(b), Some(a));
+}
+
+#[test]
+fn signed_duration_arithmetic_answers_in_the_left_timebase() {
+  let ms = Timebase::MILLIS;
+  let mpeg = Timebase::MPEG_90K;
+
+  // One second either way, counted on whichever clock is on the left.
+  let in_ms = SignedDuration::new(1000, ms)
+    .checked_add(SignedDuration::new(90_000, mpeg))
+    .expect("both spans fit");
+  assert_eq!(in_ms, SignedDuration::new(2000, ms));
+
+  let in_mpeg = SignedDuration::new(90_000, mpeg)
+    .checked_add(SignedDuration::new(1000, ms))
+    .expect("both spans fit");
+  assert_eq!(in_mpeg, SignedDuration::new(180_000, mpeg));
+
+  // The same span, at two resolutions.
+  assert!(in_ms.cmp_semantic(&in_mpeg).is_eq());
+
+  // A coarse left operand rounds the finer right one, to nearest and away
+  // from zero: half a tick of 1/3 s lands on the far side of the tie.
+  let thirds = Timebase::new(1, nz(3));
+  let zero = SignedDuration::new(0, thirds);
+  assert_eq!(
+    zero.checked_add(SignedDuration::new(500, ms)),
+    Some(SignedDuration::new(2, thirds))
+  );
+  assert_eq!(
+    zero.checked_add(SignedDuration::new(-500, ms)),
+    Some(SignedDuration::new(-2, thirds))
+  );
+}
+
+#[test]
+fn signed_duration_arithmetic_saturates_where_the_checked_rung_refuses() {
+  let ms = Timebase::MILLIS;
+  let ceiling = SignedDuration::new(i64::MAX, ms);
+  let floor = SignedDuration::new(i64::MIN, ms);
+  let one = SignedDuration::new(1, ms);
+
+  assert_eq!(ceiling.checked_add(one), None);
+  assert_eq!(ceiling.saturating_add(one), ceiling);
+  assert_eq!(floor.checked_sub(one), None);
+  assert_eq!(floor.saturating_sub(one), floor);
+
+  // The rescale can refuse before the addition does: `i32::MAX` seconds per
+  // tick into `1/i32::MAX` seconds per tick is far past `i64`.
+  let coarse = SignedDuration::new(1_000_000, Timebase::new(i32::MAX, nz(1)));
+  let fine = SignedDuration::new(0, Timebase::new(1, nz(i32::MAX)));
+  assert_eq!(fine.checked_add(coarse), None);
+  assert_eq!(fine.saturating_add(coarse).ticks(), i64::MAX);
+}
+
+#[test]
+fn signed_duration_arithmetic_and_the_degenerate_timebase() {
+  // Two spans counted in one degenerate timebase add without a conversion,
+  // so there is nothing to refuse: tick plus tick is exact.
+  let degenerate = Timebase::new(0, nz(3));
+  let a = SignedDuration::new(5, degenerate);
+  let b = SignedDuration::new(2, degenerate);
+  assert_eq!(a.checked_add(b), Some(SignedDuration::new(7, degenerate)));
+  assert_eq!(a.saturating_add(b), SignedDuration::new(7, degenerate));
+
+  // A *differing* timebase needs the rescale that a degenerate target
+  // refuses — even another degenerate one.
+  let elsewhere = SignedDuration::new(2, Timebase::new(0, nz(5)));
+  assert_eq!(a.checked_add(elsewhere), None);
+  assert_eq!(a.checked_sub(elsewhere), None);
+  assert_eq!(
+    a.checked_add(SignedDuration::new(2, Timebase::MILLIS)),
+    None
+  );
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn signed_duration_saturating_add_panics_on_a_degenerate_left_timebase() {
+  let degenerate = SignedDuration::new(5, Timebase::new(0, nz(3)));
+  degenerate.saturating_add(SignedDuration::new(2, Timebase::MILLIS));
+}
+
+#[test]
+fn signed_duration_rescale_to_and_its_checked_rung() {
+  let ms = Timebase::MILLIS;
+  let mpeg = Timebase::MPEG_90K;
+  let backwards = SignedDuration::new(-1000, ms);
+  assert_eq!(
+    backwards.rescale_to(mpeg),
+    SignedDuration::new(-90_000, mpeg)
+  );
+  assert_eq!(
+    backwards.checked_rescale_to(mpeg),
+    Some(SignedDuration::new(-90_000, mpeg))
+  );
+
+  // The checked rung refuses what the bare one clamps or panics on.
+  let coarse = SignedDuration::new(1_000_000, Timebase::new(i32::MAX, nz(1)));
+  let fine = Timebase::new(1, nz(i32::MAX));
+  assert_eq!(coarse.checked_rescale_to(fine), None);
+  assert_eq!(coarse.rescale_to(fine).ticks(), i64::MAX);
+  assert_eq!(backwards.checked_rescale_to(Timebase::new(0, nz(3))), None);
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn signed_duration_rescale_to_panics_on_a_degenerate_target() {
+  SignedDuration::new(-1000, Timebase::MILLIS).rescale_to(Timebase::new(0, nz(3)));
+}
+
+#[test]
+fn signed_duration_equality_is_structural_and_cmp_semantic_is_not() {
+  let one_second = SignedDuration::new(1, Timebase::SECONDS);
+  let one_thousand_ms = SignedDuration::new(1_000, Timebase::MILLIS);
+
+  // The same span, counted differently: unequal, and semantically equal.
+  assert_ne!(one_second, one_thousand_ms);
+  assert!(one_second.cmp_semantic(&one_thousand_ms).is_eq());
+
+  // Only the timebase is compared by value, as `Timebase`'s own `==` does —
+  // and `Hash` follows that equality.
+  let declared = SignedDuration::new(1_000, Timebase::new(2, nz(2000)));
+  assert_eq!(one_thousand_ms, declared);
+  assert_eq!(hash_of(&one_thousand_ms), hash_of(&declared));
+
+  // The derived order is that same structural comparison — the count first —
+  // so the longer of two spans can order *below* the shorter one. This is the
+  // trap `cmp_semantic` exists to step around.
+  let two_seconds = SignedDuration::new(2, Timebase::SECONDS);
+  assert!(two_seconds < one_thousand_ms);
+  assert!(two_seconds.cmp_semantic(&one_thousand_ms).is_gt());
+
+  // Within one timebase the two agree, which is the case the derived order is
+  // good for.
+  assert!(SignedDuration::new(2_000, Timebase::MILLIS) > one_thousand_ms);
+  assert!(
+    SignedDuration::new(2_000, Timebase::MILLIS)
+      .cmp_semantic(&one_thousand_ms)
+      .is_gt()
+  );
+}
+
+#[test]
+fn signed_duration_cmp_semantic_orders_by_measured_span() {
+  let ms = Timebase::MILLIS;
+  let mpeg = Timebase::MPEG_90K;
+  assert_eq!(
+    SignedDuration::new(-1, ms).cmp_semantic(&SignedDuration::new(1, ms)),
+    Ordering::Less
+  );
+  assert_eq!(
+    SignedDuration::new(-90_000, mpeg).cmp_semantic(&SignedDuration::new(-1000, ms)),
+    Ordering::Equal
+  );
+  assert_eq!(
+    SignedDuration::new(-90_001, mpeg).cmp_semantic(&SignedDuration::new(-1000, ms)),
+    Ordering::Less
+  );
+  assert_eq!(
+    SignedDuration::new(500, ms).cmp_semantic(&SignedDuration::new(90_000, mpeg)),
+    Ordering::Less
+  );
+}
+
+#[test]
+fn signed_duration_cmp_semantic_stays_transitive_on_degenerate_timebases() {
+  // Every count of a `0/den` tick measures zero, so all three of these are
+  // the same span. The identical-timebase fast path would have called the
+  // first two unequal while the cross-multiply called each of them equal to
+  // the third — an order that is not one.
+  let a = SignedDuration::new(1, Timebase::new(0, nz(3)));
+  let b = SignedDuration::new(2, Timebase::new(0, nz(3)));
+  let c = SignedDuration::new(1, Timebase::new(0, nz(5)));
+  assert!(a.cmp_semantic(&b).is_eq());
+  assert!(b.cmp_semantic(&c).is_eq());
+  assert!(a.cmp_semantic(&c).is_eq());
+}
+
+#[test]
+fn timestamp_signed_duration_since_signs_the_difference() {
+  let ms = Timebase::MILLIS;
+  let later = Timestamp::new(1500, ms);
+  let earlier = Timestamp::new(500, ms);
+  assert_eq!(
+    later.signed_duration_since(&earlier),
+    SignedDuration::new(1000, ms)
+  );
+  assert_eq!(
+    earlier.signed_duration_since(&later),
+    SignedDuration::new(-1000, ms)
+  );
+  assert_eq!(
+    later.checked_signed_duration_since(&later),
+    Some(SignedDuration::new(0, ms))
+  );
+
+  // `duration_since` is the same difference through the unsigned type, and
+  // refuses the direction this one reports.
+  assert_eq!(earlier.duration_since(&later), None);
+}
+
+#[test]
+fn timestamp_signed_duration_since_counts_in_the_receiver_timebase() {
+  let ms = Timebase::MILLIS;
+  let mpeg = Timebase::MPEG_90K;
+  let on_mpeg = Timestamp::new(90_000, mpeg);
+  let on_ms = Timestamp::new(500, ms);
+  assert_eq!(
+    on_mpeg.signed_duration_since(&on_ms),
+    SignedDuration::new(45_000, mpeg)
+  );
+  assert_eq!(
+    on_ms.signed_duration_since(&on_mpeg),
+    SignedDuration::new(-500, ms)
+  );
+}
+
+#[test]
+fn timestamp_signed_duration_since_saturates_where_the_checked_rung_refuses() {
+  let ms = Timebase::MILLIS;
+  let ceiling = Timestamp::new(i64::MAX, ms);
+  let below_zero = Timestamp::new(-1, ms);
+  assert_eq!(ceiling.checked_signed_duration_since(&below_zero), None);
+  assert_eq!(ceiling.signed_duration_since(&below_zero).ticks(), i64::MAX);
+}
+
+#[test]
+fn timestamp_shifts_by_a_signed_span() {
+  let ms = Timebase::MILLIS;
+  let mpeg = Timebase::MPEG_90K;
+  let ts = Timestamp::new(1000, ms);
+
+  assert_eq!(
+    ts.checked_add_signed(SignedDuration::new(-1500, ms)),
+    Some(Timestamp::new(-500, ms))
+  );
+  assert_eq!(
+    ts.saturating_add_signed(SignedDuration::new(-1500, ms)),
+    Timestamp::new(-500, ms)
+  );
+  assert_eq!(
+    ts.checked_sub_signed(SignedDuration::new(1500, ms)),
+    Some(Timestamp::new(-500, ms))
+  );
+  assert_eq!(
+    ts.saturating_sub_signed(SignedDuration::new(1500, ms)),
+    Timestamp::new(-500, ms)
+  );
+
+  // A span counted on another clock is rescaled into this one first, and the
+  // answer stays in this one.
+  let shifted = ts
+    .checked_add_signed(SignedDuration::new(90_000, mpeg))
+    .expect("one second fits");
+  assert_eq!(shifted.pts(), 2000);
+  assert_eq!(shifted.timebase(), ms);
+
+  // Shifting by a span and asking for it back returns it.
+  let span = SignedDuration::new(-333, ms);
+  assert_eq!(
+    ts.checked_add_signed(span)
+      .unwrap()
+      .signed_duration_since(&ts),
+    span
+  );
+}
+
+#[test]
+fn timestamp_shifts_saturate_where_the_checked_rung_refuses() {
+  let ms = Timebase::MILLIS;
+  let ceiling = Timestamp::new(i64::MAX, ms);
+  let one = SignedDuration::new(1, ms);
+  assert_eq!(ceiling.checked_add_signed(one), None);
+  assert_eq!(ceiling.saturating_add_signed(one), ceiling);
+
+  let floor = Timestamp::new(i64::MIN, ms);
+  assert_eq!(floor.checked_sub_signed(one), None);
+  assert_eq!(floor.saturating_sub_signed(one), floor);
+
+  // Subtracting the most negative span is reachable where negating it is
+  // not, which is why the two directions are separate methods.
+  assert_eq!(
+    Timestamp::new(-1, ms).checked_sub_signed(SignedDuration::new(i64::MIN, ms)),
+    Some(Timestamp::new(i64::MAX, ms))
+  );
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn timestamp_saturating_add_signed_panics_on_a_degenerate_timebase() {
+  Timestamp::new(7, Timebase::new(0, nz(3)))
+    .saturating_add_signed(SignedDuration::new(1, Timebase::MILLIS));
+}
+
+#[test]
 fn time_range_builders_and_setters() {
   let tb = Timebase::new(1, nz(1000));
   let r = TimeRange::new(0, 0, tb);

@@ -26,6 +26,23 @@ fn timestamp_pts_is_non_negative() {
 }
 
 #[test]
+fn signed_duration_spans_both_directions() {
+  let mut g = Gen::new(SIZE);
+  let mut backwards = false;
+  let mut forwards = false;
+  for _ in 0..ITERATIONS {
+    let span = SignedDuration::arbitrary(&mut g);
+    assert!(span.timebase().den().get() > 0);
+    assert!(span.timebase().num() >= 0);
+    backwards |= span.is_negative();
+    forwards |= span.is_positive();
+  }
+  // A span has no non-negativity to preserve, and this generator must not
+  // quietly become the instant one next door, which has.
+  assert!(backwards && forwards);
+}
+
+#[test]
 fn timerange_is_well_formed() {
   let mut g = Gen::new(SIZE);
   for _ in 0..ITERATIONS {

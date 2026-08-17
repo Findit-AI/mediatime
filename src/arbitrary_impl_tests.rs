@@ -40,6 +40,23 @@ fn timestamp_pts_is_non_negative() {
 }
 
 #[test]
+fn signed_duration_spans_both_directions() {
+  let mut backwards = false;
+  let mut forwards = false;
+  for seed in 0..200 {
+    let data = pseudo_random_bytes(seed);
+    let mut u = Unstructured::new(&data);
+    let span = SignedDuration::arbitrary(&mut u).expect("enough bytes to build a SignedDuration");
+    assert!(span.timebase().den().get() > 0);
+    assert!(span.timebase().num() >= 0);
+    backwards |= span.is_negative();
+    forwards |= span.is_positive();
+  }
+  // The whole `i64` is in range here, unlike the instant impl next door.
+  assert!(backwards && forwards);
+}
+
+#[test]
 fn timerange_is_well_formed() {
   for seed in 0..200 {
     let data = pseudo_random_bytes(seed);

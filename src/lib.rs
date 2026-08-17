@@ -347,6 +347,19 @@ impl Timebase {
     gcd_u32(self.num.unsigned_abs(), self.den.get().unsigned_abs()) == 1
   }
 
+  /// Whether two timebases are the same rational *as written*: `1/1000` and
+  /// `2/2000` are equal but not identical.
+  ///
+  /// The distinction `==` deliberately erases is the one a fast path needs.
+  /// Rescaling between equal timebases is exact either way, but between
+  /// identical ones it is the identity, so a count crosses unchanged — which
+  /// is what keeps same-timebase arithmetic exact where a rescale would round,
+  /// and total where a rescale would refuse a degenerate target.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  const fn is_identical(&self, other: &Self) -> bool {
+    self.num == other.num && self.den.get() == other.den.get()
+  }
+
   /// The reciprocal — `1/24` becomes `24/1` — or `None` when the numerator is
   /// zero and no reciprocal exists.
   ///
@@ -782,6 +795,118 @@ impl Timestamp {
     Self::new(self.pts.saturating_add(units), self.timebase)
   }
 
+  /// The span from `other` to `self`, counted in `self`'s timebase — negative
+  /// when `other` is the later instant.
+  ///
+  /// Point minus point is a vector, which is why this is the subtraction two
+  /// timestamps have and addition is not: an instant plus an instant names
+  /// nothing. [`Self::duration_since`] is the same difference through the
+  /// unsigned [`Duration`], and refuses the direction this one reports.
+  ///
+  /// Saturating in both steps: an `other` in a different timebase is rescaled
+  /// into `self`'s first, to the nearest tick, and the difference clamps at
+  /// `i64::MIN`/`i64::MAX` rather than wrapping.
+  /// [`Self::checked_signed_duration_since`] is the rung that refuses instead
+  /// of clamping.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the timebases differ and `self`'s is degenerate, as
+  /// [`Timebase::saturating_rescale`] does. Two instants counted in the same
+  /// degenerate timebase are subtracted without a rescale, and without a
+  /// panic.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn signed_duration_since(&self, other: &Self) -> SignedDuration {
+    let earlier = saturating_recount(other.pts, other.timebase, self.timebase);
+    SignedDuration::new(self.pts.saturating_sub(earlier), self.timebase)
+  }
+
+  /// The span from `other` to `self` in `self`'s timebase, or `None` if it is
+  /// not an exact `i64` count of its ticks.
+  ///
+  /// The checked rung of [`Self::signed_duration_since`]: `None` where that
+  /// one clamps or panics — `other` outside what `self`'s timebase can count,
+  /// a difference outside `i64`, or a degenerate `self` timebase with a
+  /// differing `other`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_signed_duration_since(&self, other: &Self) -> Option<SignedDuration> {
+    match checked_recount(other.pts, other.timebase, self.timebase) {
+      Some(earlier) => match self.pts.checked_sub(earlier) {
+        Some(ticks) => Some(SignedDuration::new(ticks, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// This instant shifted forward by the signed span `d`, or `None` if the
+  /// result is not an `i64` PTS in this timebase.
+  ///
+  /// A `d` counted in another timebase is rescaled into this one first, so
+  /// `None` also covers a span this timebase cannot count and a degenerate
+  /// timebase that can count none. Shifting *backward* is
+  /// [`Self::checked_sub_signed`] rather than a negated `d`, which
+  /// `i64::MIN` ticks has no room for.
+  ///
+  /// Named as [`u64::checked_add_signed`] is, and for the same reason: the
+  /// operand is a signed offset, the receiver is not one.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_add_signed(self, d: SignedDuration) -> Option<Self> {
+    match checked_recount(d.ticks, d.timebase, self.timebase) {
+      Some(ticks) => match self.pts.checked_add(ticks) {
+        Some(pts) => Some(Self::new(pts, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// This instant shifted forward by `d`, clamping at `i64::MIN`/`i64::MAX`
+  /// instead of overflowing — the saturating rung of
+  /// [`Self::checked_add_signed`], saturating in the rescale of `d` as well as
+  /// in the addition.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `d` is counted in a different timebase and this one is
+  /// degenerate, as [`Timebase::saturating_rescale`] does.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_add_signed(self, d: SignedDuration) -> Self {
+    let ticks = saturating_recount(d.ticks, d.timebase, self.timebase);
+    Self::new(self.pts.saturating_add(ticks), self.timebase)
+  }
+
+  /// This instant shifted backward by the signed span `d`, or `None` if the
+  /// result is not an `i64` PTS in this timebase.
+  ///
+  /// The mirror of [`Self::checked_add_signed`], and not a negation of `d`:
+  /// the most negative count has no positive twin, so subtracting it is
+  /// reachable where negating it is not.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_sub_signed(self, d: SignedDuration) -> Option<Self> {
+    match checked_recount(d.ticks, d.timebase, self.timebase) {
+      Some(ticks) => match self.pts.checked_sub(ticks) {
+        Some(pts) => Some(Self::new(pts, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// This instant shifted backward by `d`, clamping at `i64::MIN`/`i64::MAX`
+  /// instead of overflowing — the saturating rung of
+  /// [`Self::checked_sub_signed`].
+  ///
+  /// # Panics
+  ///
+  /// Panics if `d` is counted in a different timebase and this one is
+  /// degenerate, as [`Timebase::saturating_rescale`] does.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_sub_signed(self, d: SignedDuration) -> Self {
+    let ticks = saturating_recount(d.ticks, d.timebase, self.timebase);
+    Self::new(self.pts.saturating_sub(ticks), self.timebase)
+  }
+
   /// `const fn` form of [`Ord::cmp`]. Compares two timestamps by the instant
   /// they represent, rescaling if timebases differ.
   ///
@@ -789,9 +914,7 @@ impl Timestamp {
   /// so no rounding error. Same-timebase comparisons take a direct fast path.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn cmp_semantic(&self, other: &Self) -> Ordering {
-    if self.timebase.num == other.timebase.num
-      && self.timebase.den.get() == other.timebase.den.get()
-    {
+    if self.timebase.is_identical(&other.timebase) {
       return if self.pts < other.pts {
         Ordering::Less
       } else if self.pts > other.pts {
@@ -955,6 +1078,261 @@ impl fmt::Display for Timestamp {
     } else {
       write_clock(f, self.pts, self.timebase)
     }
+  }
+}
+
+/// A signed span of time, counted in ticks of an associated [`Timebase`] — the
+/// vector to [`Timestamp`]'s point.
+///
+/// [`Duration`] cannot hold one: it is unsigned, and the difference of two
+/// instants is not. A pre-roll offset, an A/V sync correction, an edit-list
+/// shift and the gap between two PTS values are all signed spans, and this is
+/// the type they land in — [`Timestamp::signed_duration_since`] returns one and
+/// [`Timestamp::checked_add_signed`] consumes one.
+///
+/// # Counted, not measured
+///
+/// `SignedDuration::new(-90_000, Timebase::MPEG_90K)` is one second backwards
+/// on an MPEG clock. The sign lives on the count, never on the timebase, whose
+/// `num >= 0` invariant is untouched: a backward span is a negative count of
+/// forward ticks.
+///
+/// # Equality and ordering
+///
+/// Both are derived, and so both are **structural**: the tick count is
+/// compared as written, and only the timebase is compared by value, as
+/// [`Timebase`]'s own `==` does. `1000 @ 1/1000` therefore equals
+/// `1000 @ 2/2000` but not `1 @ 1/1`, though both measure one second. [`Hash`]
+/// agrees with that equality.
+///
+/// [`Self::cmp_semantic`] is the comparison by measured time — the one that
+/// calls those two spans equal, and the one to sort by length with
+/// (`spans.sort_by(SignedDuration::cmp_semantic)`).
+///
+/// ```
+/// use mediatime::{SignedDuration, Timebase};
+///
+/// let a = SignedDuration::new(1, Timebase::SECONDS);
+/// let b = SignedDuration::new(1_000, Timebase::MILLIS);
+/// assert_ne!(a, b); // different counts
+/// assert!(a.cmp_semantic(&b).is_eq()); // the same second
+/// ```
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(
+  feature = "quickcheck",
+  derive(::quickcheck_richderive::Arbitrary),
+  quickcheck(arbitrary = "crate::quickcheck_impls::signed_duration")
+)]
+pub struct SignedDuration {
+  ticks: i64,
+  timebase: Timebase,
+}
+
+impl SignedDuration {
+  /// Creates a span of `ticks` ticks of `timebase`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn new(ticks: i64, timebase: Timebase) -> Self {
+    Self { ticks, timebase }
+  }
+
+  /// Returns the tick count, in units of [`Self::timebase`] — negative when
+  /// the span points backwards.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn ticks(&self) -> i64 {
+    self.ticks
+  }
+
+  /// Returns the timebase the span is counted in.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn timebase(&self) -> Timebase {
+    self.timebase
+  }
+
+  /// Whether the span points backwards, as [`i64::is_negative`] asks of the
+  /// count itself.
+  ///
+  /// All three predicates ask about the *count*. They say the same thing about
+  /// the measured span under every timebase but the degenerate `0/den`, where
+  /// every count measures zero seconds and only [`Self::is_zero`] agrees.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn is_negative(&self) -> bool {
+    self.ticks < 0
+  }
+
+  /// Whether the span points forwards — `ticks() > 0`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn is_positive(&self) -> bool {
+    self.ticks > 0
+  }
+
+  /// Whether the span counts no ticks at all — `ticks() == 0`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn is_zero(&self) -> bool {
+    self.ticks == 0
+  }
+
+  /// The same span pointing the other way, or `None` for the one span that
+  /// has no opposite: `i64::MIN` ticks, whose magnitude is not an `i64`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_neg(self) -> Option<Self> {
+    match self.ticks.checked_neg() {
+      Some(ticks) => Some(Self::new(ticks, self.timebase)),
+      None => None,
+    }
+  }
+
+  /// The same span pointing the other way, clamping `i64::MIN` ticks to
+  /// `i64::MAX` — the saturating rung of [`Self::checked_neg`].
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_neg(self) -> Self {
+    Self::new(self.ticks.saturating_neg(), self.timebase)
+  }
+
+  /// How long the span is with its direction dropped, or `None` at `i64::MIN`
+  /// ticks — the one count whose magnitude is not an `i64`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_abs(self) -> Option<Self> {
+    match self.ticks.checked_abs() {
+      Some(ticks) => Some(Self::new(ticks, self.timebase)),
+      None => None,
+    }
+  }
+
+  /// How long the span is with its direction dropped, clamping `i64::MIN`
+  /// ticks to `i64::MAX` — the saturating rung of [`Self::checked_abs`].
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_abs(self) -> Self {
+    Self::new(self.ticks.saturating_abs(), self.timebase)
+  }
+
+  /// The sum of two spans, counted in **`self`'s** timebase, or `None` if
+  /// that count is not an `i64`.
+  ///
+  /// The left operand names the timebase of the answer, so `a.checked_add(b)`
+  /// and `b.checked_add(a)` name the same span at different resolutions. Two
+  /// spans in one timebase add exactly; otherwise `rhs` is rescaled into
+  /// `self`'s timebase first, to the nearest tick (see
+  /// [`Timebase::checked_rescale`]), so a coarse left operand rounds a finer
+  /// right one.
+  ///
+  /// `None` covers three refusals: `rhs` outside what `self`'s timebase can
+  /// count, a sum outside `i64`, and a degenerate `self` timebase, which no
+  /// rescale can land in. The last does not arise when both operands are
+  /// counted in the *same* degenerate timebase — no conversion runs there, and
+  /// tick plus tick is still exact.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_add(self, rhs: Self) -> Option<Self> {
+    match checked_recount(rhs.ticks, rhs.timebase, self.timebase) {
+      Some(ticks) => match self.ticks.checked_add(ticks) {
+        Some(sum) => Some(Self::new(sum, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// The sum of two spans in `self`'s timebase, clamping at
+  /// `i64::MIN`/`i64::MAX` instead of overflowing — the saturating rung of
+  /// [`Self::checked_add`], saturating in the rescale of `rhs` as well as in
+  /// the addition.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the timebases differ and `self`'s is degenerate, as
+  /// [`Timebase::saturating_rescale`] does. Two spans counted in the same
+  /// degenerate timebase add without a rescale, and without a panic.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_add(self, rhs: Self) -> Self {
+    let ticks = saturating_recount(rhs.ticks, rhs.timebase, self.timebase);
+    Self::new(self.ticks.saturating_add(ticks), self.timebase)
+  }
+
+  /// The difference of two spans, counted in **`self`'s** timebase, or `None`
+  /// if that count is not an `i64`.
+  ///
+  /// The mirror of [`Self::checked_add`], with the same three refusals — and
+  /// not an addition of a negated `rhs`, which `i64::MIN` ticks has no room
+  /// for.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_sub(self, rhs: Self) -> Option<Self> {
+    match checked_recount(rhs.ticks, rhs.timebase, self.timebase) {
+      Some(ticks) => match self.ticks.checked_sub(ticks) {
+        Some(difference) => Some(Self::new(difference, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// The difference of two spans in `self`'s timebase, clamping at
+  /// `i64::MIN`/`i64::MAX` instead of overflowing — the saturating rung of
+  /// [`Self::checked_sub`].
+  ///
+  /// # Panics
+  ///
+  /// Panics if the timebases differ and `self`'s is degenerate, as
+  /// [`Timebase::saturating_rescale`] does.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_sub(self, rhs: Self) -> Self {
+    let ticks = saturating_recount(rhs.ticks, rhs.timebase, self.timebase);
+    Self::new(self.ticks.saturating_sub(ticks), self.timebase)
+  }
+
+  /// Returns the same span counted in a different timebase.
+  ///
+  /// Converts through [`Timebase::saturating_rescale`], so the new count is
+  /// the nearest whole tick of `target` (halfway cases away from zero);
+  /// round-tripping through a coarser timebase can still lose precision.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `target.num() == 0`, as [`Timestamp::rescale_to`] does: a
+  /// degenerate timebase spans no time per tick, so no count of them measures
+  /// this span.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn rescale_to(self, target: Timebase) -> Self {
+    Self {
+      ticks: self.timebase.saturating_rescale(self.ticks, target),
+      timebase: target,
+    }
+  }
+
+  /// Returns the same span counted in `target`, or `None` where
+  /// [`Self::rescale_to`] would clamp or panic — the checked rung.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_rescale_to(self, target: Timebase) -> Option<Self> {
+    match self.timebase.checked_rescale(self.ticks, target) {
+      Some(ticks) => Some(Self {
+        ticks,
+        timebase: target,
+      }),
+      None => None,
+    }
+  }
+
+  /// Compares two spans by the time they measure, rescaling if the timebases
+  /// differ — the semantic order the derived [`Ord`] deliberately is not.
+  ///
+  /// Uses a 128-bit cross-multiply for the mixed-timebase case: no division,
+  /// so no rounding error, and a negative count needs no special handling.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn cmp_semantic(&self, other: &Self) -> Ordering {
+    // The identical-timebase fast path is sound only where a tick spans time.
+    // Under a degenerate `0/den` every count measures zero, so comparing the
+    // counts would report an order the spans do not have — and would disagree
+    // with the cross-multiply's `Equal` against a *differently written*
+    // degenerate timebase, which is how an intransitive `==` is built.
+    if self.timebase.is_identical(&other.timebase) && self.timebase.num != 0 {
+      return cmp_i128(self.ticks as i128, other.ticks as i128);
+    }
+    // self.ticks * self.num / self.den  vs  other.ticks * other.num / other.den
+    //   ⇔ self.ticks * self.num * other.den  vs  other.ticks * other.num * self.den
+    let lhs =
+      (self.ticks as i128) * (self.timebase.num as i128) * (other.timebase.den.get() as i128);
+    let rhs =
+      (other.ticks as i128) * (other.timebase.num as i128) * (self.timebase.den.get() as i128);
+    cmp_i128(lhs, rhs)
   }
 }
 
@@ -1327,6 +1705,48 @@ const fn rescaled(pts: i64, from: Timebase, to: Timebase) -> i128 {
   div_round_half_away(numerator, denominator)
 }
 
+/// `ticks` of the `from` timebase recounted in `to`, or `None` where the
+/// rescale has no answer — the conversion every mixed-timebase span operation
+/// runs before it has two counts to work with.
+///
+/// An *identical* timebase is answered without arithmetic. That shortcut is
+/// not only speed: it is what keeps same-timebase arithmetic exact where a
+/// rescale would round, and total where a rescale would refuse a degenerate
+/// target. A count already in the target's own timebase needs no conversion,
+/// so there is none to refuse.
+#[cfg_attr(not(tarpaulin), inline(always))]
+const fn checked_recount(ticks: i64, from: Timebase, to: Timebase) -> Option<i64> {
+  if from.is_identical(&to) {
+    Some(ticks)
+  } else {
+    from.checked_rescale(ticks, to)
+  }
+}
+
+/// [`checked_recount`] with the saturating rung's posture: a count outside
+/// `i64` clamps, and a degenerate `to` panics.
+#[cfg_attr(not(tarpaulin), inline(always))]
+const fn saturating_recount(ticks: i64, from: Timebase, to: Timebase) -> i64 {
+  if from.is_identical(&to) {
+    ticks
+  } else {
+    from.saturating_rescale(ticks, to)
+  }
+}
+
+/// `const fn` form of [`Ord::cmp`] on `i128`, which the semantic comparisons
+/// need and the trait cannot give them in a `const` context.
+#[cfg_attr(not(tarpaulin), inline(always))]
+const fn cmp_i128(lhs: i128, rhs: i128) -> Ordering {
+  if lhs < rhs {
+    Ordering::Less
+  } else if lhs > rhs {
+    Ordering::Greater
+  } else {
+    Ordering::Equal
+  }
+}
+
 /// Integer division rounding to nearest, halfway cases **away from zero** —
 /// the posture FFmpeg's `av_rescale` and `av_rescale_q` take by default
 /// (`AV_ROUND_NEAR_INF`), which is why this crate takes it: a PTS rescaled
@@ -1440,7 +1860,7 @@ fn write_clock(f: &mut fmt::Formatter<'_>, pts: i64, timebase: Timebase) -> fmt:
 #[cfg(feature = "quickcheck")]
 #[cfg_attr(docsrs, doc(cfg(feature = "quickcheck")))]
 pub mod quickcheck_impls {
-  use crate::{TimeRange, Timebase, Timestamp};
+  use crate::{SignedDuration, TimeRange, Timebase, Timestamp};
   use core::num::NonZeroI32;
   use quickcheck::{Arbitrary, Gen};
 
@@ -1461,6 +1881,13 @@ pub mod quickcheck_impls {
   /// Non-negative `pts` + arbitrary `Timebase`.
   pub fn timestamp(g: &mut Gen) -> Timestamp {
     Timestamp::new(non_negative_i64(g), timebase(g))
+  }
+
+  /// Full-range tick count + arbitrary `Timebase`. Unlike the instant above,
+  /// a span has no non-negativity to preserve — pointing backwards is the
+  /// reason the type exists.
+  pub fn signed_duration(g: &mut Gen) -> SignedDuration {
+    SignedDuration::new(i64::arbitrary(g), timebase(g))
   }
 
   /// `[start, end)` with `start <= end`, both non-negative. The previous
@@ -1507,6 +1934,14 @@ const _: () = {
   impl<'a> Arbitrary<'a> for Timestamp {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
       non_negative_i64(u).and_then(|i| u.arbitrary().map(|tb| Self::new(i, tb)))
+    }
+  }
+
+  impl<'a> Arbitrary<'a> for SignedDuration {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+      // No sign to constrain: a span points either way by design, so the
+      // whole `i64` is in range.
+      Ok(Self::new(u.arbitrary()?, u.arbitrary()?))
     }
   }
 
