@@ -665,7 +665,7 @@ impl TimeRange {
   /// - Panics if `end < start` (negative duration).
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn new(start: i64, end: i64, timebase: Timebase) -> Self {
-    assert!(start <= end, "end must not be greater or equal to start");
+    assert!(start <= end, "end must not precede start");
 
     Self {
       start,
@@ -680,8 +680,16 @@ impl TimeRange {
   /// temporarily violate `start <= end` (e.g. `start` field arrives before
   /// `end`, so the partially-decoded struct holds `start=100, end=0`).
   /// The normal `new()` constructor panics in that case. This constructor
-  /// skips the assertion so decode can proceed; the final decoded value
-  /// is always consistent because the encoder never writes `start > end`.
+  /// skips the assertion so decode can proceed.
+  ///
+  /// The *final* value is consistent only when the peer is this crate's own
+  /// encoder, which never writes `start > end`. A foreign or hostile peer
+  /// can write one, and nothing downstream of the last `merge_field` call
+  /// re-checks — so a decoded range can violate the invariant, and
+  /// [`Self::duration`] then panics on it. Closing that needs a policy this
+  /// decoder does not have yet: its other malformed-input arms *clamp* to
+  /// stay total (see `buffa.rs`), and there is no obvious clamp for an
+  /// inverted range.
   #[cfg(feature = "buffa")]
   #[inline(always)]
   pub(crate) const fn new_for_decode(start: i64, end: i64, timebase: Timebase) -> Self {
@@ -805,14 +813,20 @@ impl TimeRange {
     self.end.saturating_sub(self.start)
   }
 
-  /// Returns the elapsed [`Duration`] from `start` to `end`, or `None` if
-  /// `end` is before `start`.
+  /// Returns the elapsed [`Duration`] from `start` to `end`.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `end` precedes `start`, which every constructor refuses and
+  /// [`Self::rescale_to`] preserves — so this is unreachable for a range
+  /// built through the public API. It is reachable through the `buffa`
+  /// decoder, which admits an inverted range from the wire.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn duration(&self) -> Duration {
     self
       .end()
       .duration_since(&self.start())
-      .expect("end must greater than or equal to start")
+      .expect("end must not precede start")
   }
 
   /// Returns a new `TimeRange` representing the same span in a different timebase.

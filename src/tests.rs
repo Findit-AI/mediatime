@@ -519,7 +519,7 @@ fn time_range_try_new() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "end must not precede start")]
 fn time_range_new_panics_on_negative_duration() {
   let tb = Timebase::new(1, nz(1000));
   TimeRange::new(500, 100, tb);
