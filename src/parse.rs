@@ -14,14 +14,14 @@ use crate::{TimeRange, Timebase, Timestamp};
 
 /// Returned when a string is not a [`Timebase`] rendering.
 ///
-/// Carries no detail: the grammar is two integers and a slash, so the input
-/// is its own diagnostic.
+/// Carries no detail: the grammar is two integers and a slash, or a name from
+/// a fixed roster, so the input is its own diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseTimebaseError(());
 
 impl fmt::Display for ParseTimebaseError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    f.write_str("expected a timebase `num/den`, with num >= 0 and den > 0")
+    f.write_str("expected a timebase `num/den` with num >= 0 and den > 0, or a well-known name")
   }
 }
 
@@ -57,24 +57,42 @@ impl fmt::Display for ParseTimeRangeError {
 
 impl core::error::Error for ParseTimeRangeError {}
 
-/// Parses `num/den` — the form [`Timebase`]'s `Display` writes, in both `{}`
-/// and `{:#}`.
+/// Parses either a [well-known name](Timebase#the-well-known-roster) —
+/// `MILLIS`, `MPEG_90K` — or `num/den`, the form [`Timebase`]'s `Display`
+/// writes in both `{}` and `{:#}`.
 ///
-/// Surrounding and interior whitespace is trimmed, so `1 / 1000` parses; the
-/// slash is required. The value is **not** reduced: `2/4` parses to a
-/// numerator of 2 over a denominator of 4, which is what was written, and
-/// what `Display` will write back.
+/// The roster is tried first, exactly and case-sensitively, via
+/// [`Timebase::from_name`]; nothing in it contains a slash, so the two arms
+/// cannot collide. It is an *input* convenience for hand-written configuration
+/// and command lines: `Display` still writes `num/den` for every value, so the
+/// `Display` → `FromStr` round trip is unchanged and lossless. The reverse is
+/// deliberately not injective — `"MILLIS"` and `"1/1000"` parse to the same
+/// timebase, and [`Timebase::well_known_name`] is where the name goes to be
+/// recovered.
+///
+/// Surrounding and interior whitespace is trimmed, so `1 / 1000` parses; on
+/// the `num/den` arm the slash is required. The value is **not** reduced:
+/// `2/4` parses to a numerator of 2 over a denominator of 4, which is what was
+/// written, and what `Display` will write back.
+///
+/// [`Timestamp`] and [`TimeRange`] parse their timebase half through this
+/// impl, so `12345 @ MPEG_90K` parses too.
 ///
 /// # Errors
 ///
-/// Returns [`ParseTimebaseError`] if the slash is missing, if either half is
-/// not an `i32`, or if the pair is one [`Timebase::try_new`] refuses — a
-/// negative numerator, or a denominator that is zero or negative.
+/// Returns [`ParseTimebaseError`] if the input is neither a roster name nor a
+/// `num/den` pair: the slash is missing, either half is not an `i32`, or the
+/// pair is one [`Timebase::try_new`] refuses — a negative numerator, or a
+/// denominator that is zero or negative.
 impl FromStr for Timebase {
   type Err = ParseTimebaseError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     let err = ParseTimebaseError(());
+    let s = s.trim();
+    if let Some(known) = Self::from_name(s) {
+      return Ok(known);
+    }
     let (num, den) = s.split_once('/').ok_or(err)?;
     let num = num.trim().parse::<i32>().map_err(|_| err)?;
     let den = den.trim().parse::<i32>().map_err(|_| err)?;

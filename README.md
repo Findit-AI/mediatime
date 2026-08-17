@@ -46,7 +46,8 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 
 - **Value-based equality and ordering.** `1/2 == 2/4 == 3/6`; `Timestamp(1000, 1/1000) == Timestamp(90_000, 1/90_000)`. Cross-timebase `cmp` uses 128-bit cross-multiply — exact for any `i32` numerator/denominator with any `i64` PTS.
 - **Hash agrees with Eq.** Hashes the reduced-form rational, so equal rationals hash identically and you can use these types as `HashMap` keys.
-- **FFmpeg-style utilities.** `rescale_pts` (a.k.a. `av_rescale_q`), `frames_to_duration`, `duration_to_pts`, `duration_since`, `saturating_sub_duration`.
+- **FFmpeg-style utilities.** `checked_rescale` / `saturating_rescale` (a.k.a. `av_rescale_q`, rounding to nearest with halfway cases away from zero, as FFmpeg's `AV_ROUND_NEAR_INF` does), `frames_to_duration`, `checked_duration_to_pts` / `checked_pts_to_duration`, `duration_since`, `saturating_sub_duration`. Every lossy conversion is spelled `checked_` or `saturating_` — there is no bare name whose overflow posture you have to remember.
+- **Named timebases.** `Timebase::MILLIS`, `MPEG_90K`, `HZ_48K`, `NTSC_VIDEO`, `FILM_24` and the rest of the roster, each with the container or codec convention that declares it. `Timebase::from_name("MPEG_90K")` reads a name, `well_known_name()` writes one back, and `FromStr` accepts either a name or `num/den`.
 - **`TimeRange` interpolation.** Linear midpoint (`interpolate(t)`) for placing an event somewhere between fade-out and fade-in frames, with `t ∈ [0, 1]` clamped.
 - **`Display` for logs.** `{}` is readable — `1/1000`, `0:00:00.137`, `[0:00:01.500, 0:00:03.250)`; `{:#}` is exact — `12345 @ 1/90000`, `[1500, 3250) @ 1/1000`.
 - **`FromStr` for the exact form.** `"1/1000"`, `"12345 @ 1/90000"` and `"[1500, 3250) @ 1/1000"` parse back to the value that wrote them. The readable clock has no inverse — it is truncated to milliseconds and names no timebase — so it is rejected rather than guessed at.
@@ -60,9 +61,12 @@ use core::num::NonZeroI32;
 use core::time::Duration;
 use mediatime::{Timebase, Timestamp, TimeRange};
 
-// FFmpeg-style rational timebases.
+// FFmpeg-style rational timebases — spelled out, or taken from the roster.
 let ms     = Timebase::new(1, NonZeroI32::new(1000).unwrap());
 let mpegts = Timebase::new(1, NonZeroI32::new(90_000).unwrap());
+assert_eq!(ms, Timebase::MILLIS);
+assert_eq!(Timebase::from_name("MPEG_90K"), Some(mpegts));
+assert_eq!(mpegts.well_known_name(), Some("MPEG_90K"));
 
 // Same instant in two different timebases — they compare equal.
 let a = Timestamp::new(1_000, ms);
@@ -70,8 +74,9 @@ let b = Timestamp::new(90_000, mpegts);
 assert_eq!(a, b);
 assert_eq!(a.duration_since(&b), Some(Duration::ZERO));
 
-// `av_rescale_q`-style conversion, rounding toward zero.
-assert_eq!(ms.rescale(500, mpegts), 45_000);
+// `av_rescale_q`-style conversion, rounding to the nearest tick.
+assert_eq!(ms.checked_rescale(500, mpegts), Some(45_000));
+assert_eq!(ms.saturating_rescale(500, mpegts), 45_000);
 
 // Frame rate helpers — treat `Timebase` as fps and count frames.
 let ntsc = Timebase::new(30_000, NonZeroI32::new(1001).unwrap());
@@ -89,8 +94,9 @@ assert_eq!(format!("{:#}", Timestamp::new(12_345, mpegts)), "12345 @ 1/90000");
 assert_eq!(format!("{r}"),  "[0:00:00.100, 0:00:00.500)");
 assert_eq!(format!("{r:#}"), "[100, 500) @ 1/1000");
 
-// `FromStr` inverts the exact form.
+// `FromStr` inverts the exact form, and also reads a roster name.
 assert_eq!("1/1000".parse::<Timebase>(), Ok(ms));
+assert_eq!("MILLIS".parse::<Timebase>(), Ok(ms));
 assert_eq!("[100, 500) @ 1/1000".parse::<TimeRange>(), Ok(r));
 ```
 

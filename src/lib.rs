@@ -28,15 +28,30 @@ mod parse;
 
 pub use parse::{ParseTimeRangeError, ParseTimebaseError, ParseTimestampError};
 
+/// Nanoseconds in a second — the factor that turns a [`Duration`] into ticks
+/// of a [`Timebase`] and back.
+const NANOS_PER_SEC: u128 = 1_000_000_000;
+
+/// `NonZeroI32` from a denominator known at compile time, for the const
+/// contexts `NonZeroI32::new(..).expect(..)` cannot be written in without
+/// naming a message no caller will ever read.
+///
+/// # Panics
+///
+/// Panics if `n == 0`, which every call site rules out by passing a literal.
+const fn nz(n: i32) -> NonZeroI32 {
+  match NonZeroI32::new(n) {
+    Some(v) => v,
+    None => unreachable!(),
+  }
+}
+
 /// `NonZeroI32` for 1: the default denominator, and the clamp target when a
 /// malformed denominator arrives on the wire.
 ///
 /// Spelled out rather than reached for as `NonZeroI32::MIN`, which is
 /// `i32::MIN` — a value [`Timebase::new`] rejects.
-pub(crate) const DEN_ONE: NonZeroI32 = match NonZeroI32::new(1) {
-  Some(v) => v,
-  None => unreachable!(),
-};
+pub(crate) const DEN_ONE: NonZeroI32 = nz(1);
 
 /// A media timebase represented as a rational number: a non-negative numerator
 /// over a strictly positive denominator.
@@ -72,7 +87,7 @@ pub(crate) const DEN_ONE: NonZeroI32 = match NonZeroI32::new(1) {
 /// the rest is enforced by [`Timebase::new`] (and by every setter, which routes
 /// through it). A **zero numerator stays legal**: it is a degenerate timebase,
 /// valid to construct and to compare, but not a valid rescale target — see
-/// [`Timebase::rescale_pts`].
+/// [`Timebase::checked_rescale`].
 ///
 /// `AVRational` itself permits a negative denominator and normalizes the sign
 /// into the numerator via `av_reduce`; that is a convention rather than a type
@@ -85,6 +100,20 @@ pub(crate) const DEN_ONE: NonZeroI32 = match NonZeroI32::new(1) {
 /// [`Hash`] hashes the reduced (lowest-terms) form, so equal rationals hash
 /// the same. Cross-multiplication uses `i64` intermediates — exact for any
 /// `i32` numerator / denominator.
+///
+/// # The well-known roster
+///
+/// The constants on this type — [`MILLIS`](Self::MILLIS),
+/// [`MPEG_90K`](Self::MPEG_90K), [`NTSC_VIDEO`](Self::NTSC_VIDEO) and the
+/// rest — are the timebases containers and codecs actually declare, each with
+/// a name [`Self::from_name`] reads and [`Self::well_known_name`] writes back.
+///
+/// Every one of them is a **timebase**: seconds per tick. The frame-rate
+/// entries are therefore the *reciprocals* of the rate they are named for —
+/// [`FILM_24`](Self::FILM_24) is `1/24`, not `24/1` — because a PTS timebase
+/// and a frame rate are reciprocal readings of the same rational, as
+/// [`Self::frames_to_duration`] describes. [`Self::checked_recip`] converts
+/// between the two readings.
 #[derive(Debug, Clone, Copy, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
@@ -113,6 +142,65 @@ impl Default for Timebase {
 }
 
 impl Timebase {
+  /// One tick per second — the coarsest of the roster, and the timebase a
+  /// value already counted in whole seconds carries.
+  pub const SECONDS: Self = Self::new(1, nz(1));
+
+  /// Millisecond ticks — Matroska's default `TimecodeScale` (1 000 000 ns),
+  /// WebVTT and SRT cue times, and the unit most application-level media APIs
+  /// report positions in.
+  pub const MILLIS: Self = Self::new(1, nz(1_000));
+
+  /// Microsecond ticks — FFmpeg's `AV_TIME_BASE`, which is the unit
+  /// `AVFormatContext::duration` and `av_seek_frame`'s default are expressed
+  /// in (`AV_TIME_BASE_Q` is exactly this rational).
+  pub const MICROS: Self = Self::new(1, nz(1_000_000));
+
+  /// Nanosecond ticks — the resolution [`Duration`] itself carries, so this
+  /// is the timebase a [`Duration`] is already counted in, and the one a
+  /// conversion to or from one rescales through.
+  pub const NANOS: Self = Self::new(1, nz(1_000_000_000));
+
+  /// The 90 kHz clock MPEG counts PTS and DTS in — MPEG-TS, MPEG-PS, and
+  /// RTP's video clock rate all use it.
+  pub const MPEG_90K: Self = Self::new(1, nz(90_000));
+
+  /// One tick per audio sample at 48 kHz — DVD and broadcast audio,
+  /// professional interchange, and Opus, whose clock rate is always 48 kHz.
+  pub const HZ_48K: Self = Self::new(1, nz(48_000));
+
+  /// One tick per audio sample at 44.1 kHz — CD-DA's rate, and the one most
+  /// MP3 and AAC music files carry.
+  pub const HZ_44_1K: Self = Self::new(1, nz(44_100));
+
+  /// One tick per frame at 24000/1001 fps (`23.976`) — film pulled down for
+  /// NTSC, which is what most film-sourced MP4 and MOV files declare.
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const NTSC_FILM: Self = Self::new(1_001, nz(24_000));
+
+  /// One tick per frame at 30000/1001 fps (`29.97`) — NTSC video, and the
+  /// rate broadcast-sourced material in North America and Japan carries.
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const NTSC_VIDEO: Self = Self::new(1_001, nz(30_000));
+
+  /// One tick per frame at exactly 24 fps — cinema's rate, and what a DCP
+  /// counts in.
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const FILM_24: Self = Self::new(1, nz(24));
+
+  /// One tick per frame at 25 fps — PAL and SECAM broadcast, and EBU
+  /// timecode.
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const PAL_25: Self = Self::new(1, nz(25));
+
   /// Creates a new `Timebase` with the given numerator and denominator.
   ///
   /// # Panics
@@ -137,6 +225,36 @@ impl Timebase {
     } else {
       None
     }
+  }
+
+  /// Looks up a [well-known timebase](Self#the-well-known-roster) by the exact
+  /// name of its constant — `"MILLIS"`, `"MPEG_90K"`, `"NTSC_VIDEO"`.
+  ///
+  /// The match is exact and case-sensitive: the names are the constants'
+  /// own `SCREAMING_SNAKE_CASE` spellings, so a name that round-trips through
+  /// [`Self::well_known_name`] is the one a reader can grep for in this file.
+  /// `None` for anything else — including a `num/den` rendering, which
+  /// [`FromStr`](core::str::FromStr) accepts on its other arm.
+  pub fn from_name(name: &str) -> Option<Self> {
+    WELL_KNOWN
+      .iter()
+      .find_map(|(known, timebase)| (*known == name).then_some(*timebase))
+  }
+
+  /// The name of the [well-known timebase](Self#the-well-known-roster) this
+  /// one *equals*, if any — the inverse of [`Self::from_name`].
+  ///
+  /// Matched **by value**, as [`PartialEq`] matches: `2/2000` is
+  /// [`MILLIS`](Self::MILLIS) and answers to that name, even though
+  /// [`Display`](fmt::Display) will still print the `2/2000` the stream
+  /// declared. No two roster entries are equal, so the answer is unambiguous.
+  ///
+  /// Written for an output face that wants to *say* which timebase a stream
+  /// carries rather than hand a reader two integers to divide.
+  pub fn well_known_name(&self) -> Option<&'static str> {
+    WELL_KNOWN
+      .iter()
+      .find_map(|(name, timebase)| (timebase == self).then_some(*name))
   }
 
   /// Returns the numerator.
@@ -198,26 +316,112 @@ impl Timebase {
     self
   }
 
-  /// Rescales `pts` from timebase `from` to timebase `to`, rounding toward zero.
+  /// Reduces the rational to lowest terms: `2/4` becomes `1/2`, `0/3` becomes
+  /// `0/1`.
   ///
-  /// Equivalent to FFmpeg's `av_rescale_q`. The product is formed in `i128`,
-  /// which cannot overflow: the operands are bounded by `2^63`, `2^31` and
-  /// `2^31`, so the intermediate stays under `2^125`. If the *result* exceeds
-  /// `i64`'s range (pathological for real video), it is **saturated** to
-  /// `i64::MIN` or `i64::MAX` — this matches the behavior promised by
-  /// `duration_to_pts` and avoids silent wraparound.
+  /// The value is unchanged — the reduced form compares equal to what it came
+  /// from and hashes with it — so this is a *canonicalization*, useful where a
+  /// declared form has to be stored or rendered once per distinct value rather
+  /// than once per way of writing it. [`Display`](fmt::Display) deliberately
+  /// does **not** reduce.
+  ///
+  /// No sign handling: `num >= 0` and `den > 0` are constructor invariants, so
+  /// the gcd of the magnitudes is the gcd, and it is at least 1 because
+  /// `den >= 1`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn reduce(self) -> Self {
+    let g = gcd_u32(self.num.unsigned_abs(), self.den.get().unsigned_abs()) as i32;
+    Self {
+      num: self.num / g,
+      den: nz(self.den.get() / g),
+    }
+  }
+
+  /// Whether the rational is already in lowest terms — `true` for `1/2` and
+  /// `0/1`, `false` for `2/4` and `0/3`.
+  ///
+  /// Exactly `*self == self.reduce()` in the *structural* sense that `==`
+  /// itself cannot express, `==` being value-based here.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn is_reduced(&self) -> bool {
+    gcd_u32(self.num.unsigned_abs(), self.den.get().unsigned_abs()) == 1
+  }
+
+  /// The reciprocal — `1/24` becomes `24/1` — or `None` when the numerator is
+  /// zero and no reciprocal exists.
+  ///
+  /// This is the conversion between the two readings of a `Timebase`: a PTS
+  /// timebase (seconds per tick) and a frame rate (frames per second) are
+  /// reciprocals, which is why the [roster](Self#the-well-known-roster) spells
+  /// [`FILM_24`](Self::FILM_24) as `1/24` and
+  /// [`Self::frames_to_duration`] wants `24/1`.
+  ///
+  /// A zero numerator is the only failure: the swap is otherwise total,
+  /// because the constructor's `den > 0` becomes the new numerator's
+  /// `num >= 0` and a `num > 0` becomes a legal denominator.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_recip(self) -> Option<Self> {
+    match NonZeroI32::new(self.num) {
+      Some(den) => Some(Self {
+        num: self.den.get(),
+        den,
+      }),
+      None => None,
+    }
+  }
+
+  /// Rescales `pts` from this timebase to `to`, or `None` if the answer is not
+  /// an `i64`.
+  ///
+  /// `self` is the source timebase, so this is FFmpeg's
+  /// `av_rescale_q(pts, self, to)` — including its rounding, which is
+  /// **to nearest, halfway cases away from zero** (`AV_ROUND_NEAR_INF`, the
+  /// posture `av_rescale` and `av_rescale_q` take by default). Rescaling
+  /// `1/1000` ticks into `1/3` ticks sends `500` to `2` rather than to `1`.
+  ///
+  /// The product is formed in `i128`, which cannot overflow: the operands are
+  /// bounded by `2^63`, `2^31` and `2^31`, so the intermediate stays under
+  /// `2^125`. Two things are then reported as `None` rather than answered
+  /// wrongly:
+  ///
+  /// - a quotient outside `i64`'s range (pathological for real video);
+  /// - a `to` whose numerator is zero — a degenerate timebase names one single
+  ///   instant, so no tick count in it can represent a non-zero one.
+  ///
+  /// [`Self::saturating_rescale`] is the same arithmetic with the other
+  /// posture toward the first of those.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_rescale(&self, pts: i64, to: Self) -> Option<i64> {
+    if to.num == 0 {
+      return None;
+    }
+    let q = rescaled(pts, *self, to);
+    if q > i64::MAX as i128 || q < i64::MIN as i128 {
+      None
+    } else {
+      Some(q as i64)
+    }
+  }
+
+  /// Rescales `pts` from this timebase to `to`, clamping to `i64::MIN` or
+  /// `i64::MAX` instead of overflowing.
+  ///
+  /// The saturating rung of [`Self::checked_rescale`]: same arithmetic, same
+  /// rounding (to nearest, halfway cases away from zero), and the only
+  /// difference is that a quotient too large for an `i64` comes back as the
+  /// nearest `i64` rather than as `None`.
   ///
   /// # Panics
   ///
-  /// Panics if `to.num() == 0` (division by zero).
+  /// Panics if `to.num() == 0`, the divide-by-zero a degenerate target
+  /// timebase would be — as [`i64::saturating_div`] panics on a zero divisor,
+  /// and for the same reason: saturation is a posture toward *overflow*, and
+  /// there is no quotient here to clamp. Use [`Self::checked_rescale`] where
+  /// the target may be degenerate.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn rescale_pts(pts: i64, from: Self, to: Self) -> i64 {
+  pub const fn saturating_rescale(&self, pts: i64, to: Self) -> i64 {
     assert!(to.num != 0, "target timebase numerator must be non-zero");
-    // pts * (from.num / from.den) / (to.num / to.den)
-    // = pts * from.num * to.den / (from.den * to.num)
-    let numerator = (pts as i128) * (from.num as i128) * (to.den.get() as i128);
-    let denominator = (from.den.get() as i128) * (to.num as i128);
-    let q = numerator / denominator;
+    let q = rescaled(pts, *self, to);
     if q > i64::MAX as i128 {
       i64::MAX
     } else if q < i64::MIN as i128 {
@@ -225,18 +429,6 @@ impl Timebase {
     } else {
       q as i64
     }
-  }
-
-  /// Rescales `pts` from this timebase to `to`, rounding toward zero.
-  ///
-  /// Method form of [`Self::rescale_pts`]: `self` is the source timebase.
-  ///
-  /// # Panics
-  ///
-  /// Panics if `to.num() == 0` (division by zero).
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn rescale(&self, pts: i64, to: Self) -> i64 {
-    Self::rescale_pts(pts, *self, to)
   }
 
   /// Treats `self` as a frame rate (frames per second) and returns the
@@ -264,34 +456,149 @@ impl Timebase {
     let num = self.num as u128;
     let den = self.den.get() as u128;
     assert!(num != 0, "frame rate numerator must be non-zero");
-    let total_ns = (frames as u128) * den * 1_000_000_000 / num;
-    let secs = (total_ns / 1_000_000_000) as u64;
-    let nanos = (total_ns % 1_000_000_000) as u32;
+    let total_ns = (frames as u128) * den * NANOS_PER_SEC / num;
+    let secs = (total_ns / NANOS_PER_SEC) as u64;
+    let nanos = (total_ns % NANOS_PER_SEC) as u32;
     Duration::new(secs, nanos)
   }
 
-  /// Converts a [`Duration`] into the number of PTS units this timebase
-  /// represents, rounding toward zero.
+  /// Converts a [`Duration`] into the number of ticks of this timebase that
+  /// span it, or `None` if that count is not an `i64`.
   ///
-  /// Inverse of "multiplying a PTS value by this timebase to get seconds".
-  /// Saturates at `i64::MAX` if the duration is absurdly large for this
-  /// timebase. Returns `0` if `self.num() == 0` (a degenerate timebase).
+  /// The inverse of [`Self::checked_pts_to_duration`], and the same conversion
+  /// [`Self::checked_rescale`] performs out of [`NANOS`](Self::NANOS) — with
+  /// the same rounding, to nearest with halfway cases away from zero. Since a
+  /// [`Duration`] is never negative, "away from zero" is "up" here.
+  ///
+  /// Two things come back as `None` rather than as a wrong answer:
+  ///
+  /// - a count too large for an `i64` (the duration is absurd for this
+  ///   timebase);
+  /// - a `self.num() == 0` degenerate timebase, whose every tick lands on the
+  ///   same instant, so no count of them spans a non-zero duration.
+  ///
+  /// The second is why this rung exists: [`Self::saturating_duration_to_pts`]
+  /// answers `0` there, which is right only for [`Duration::ZERO`], and a
+  /// caller building a `checked_` operation on top of a conversion that had
+  /// already given up would report an exact answer it does not have.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn duration_to_pts(&self, d: Duration) -> i64 {
-    // Widening, not sign extension — see `frames_to_duration`.
-    let num = self.num as u128;
-    if num == 0 {
+  pub const fn checked_duration_to_pts(&self, d: Duration) -> Option<i64> {
+    if self.num == 0 {
+      return None;
+    }
+    let ticks = self.duration_ticks(d);
+    if ticks > i64::MAX as u128 {
+      None
+    } else {
+      Some(ticks as i64)
+    }
+  }
+
+  /// Converts a [`Duration`] into the number of ticks of this timebase that
+  /// span it, clamping at `i64::MAX` instead of overflowing.
+  ///
+  /// The saturating rung of [`Self::checked_duration_to_pts`]: same
+  /// arithmetic, same rounding, and a count too large for an `i64` comes back
+  /// as `i64::MAX`.
+  ///
+  /// A degenerate `self.num() == 0` timebase answers `0` — not a saturation
+  /// but the identity, which is what makes
+  /// [`Timestamp::saturating_add_duration`] a no-op there rather than a panic.
+  /// It is the honest answer only for [`Duration::ZERO`]; use
+  /// [`Self::checked_duration_to_pts`] when the difference matters.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_duration_to_pts(&self, d: Duration) -> i64 {
+    if self.num == 0 {
       return 0;
     }
-    let den = self.den.get() as u128;
-    // pts_units = duration_ns * den / (num * 1e9)
-    let ns = d.as_nanos();
-    let pts = ns * den / (num * 1_000_000_000);
-    if pts > i64::MAX as u128 {
+    let ticks = self.duration_ticks(d);
+    if ticks > i64::MAX as u128 {
       i64::MAX
     } else {
-      pts as i64
+      ticks as i64
     }
+  }
+
+  /// Converts a tick count in this timebase into the [`Duration`] it spans, or
+  /// `None` if no [`Duration`] represents it.
+  ///
+  /// The inverse of [`Self::checked_duration_to_pts`], rounded to the nearest
+  /// nanosecond with halfway cases away from zero. Two things come back as
+  /// `None`:
+  ///
+  /// - a negative `pts`, which pre-roll and edit lists produce and which
+  ///   [`Duration`] cannot represent (it is unsigned) — see
+  ///   [`Timestamp::duration`] for the same refusal on a whole timestamp;
+  /// - a span whose seconds exceed `u64::MAX`, past [`Duration::MAX`].
+  ///
+  /// A degenerate `self.num() == 0` timebase is **not** a failure in this
+  /// direction: every tick of it lands on the same instant, and
+  /// [`Duration::ZERO`] is that instant.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_pts_to_duration(&self, pts: i64) -> Option<Duration> {
+    if pts < 0 {
+      return None;
+    }
+    let nanos = self.tick_nanos(pts);
+    let secs = nanos / NANOS_PER_SEC;
+    if secs > u64::MAX as u128 {
+      return None;
+    }
+    Some(Duration::new(secs as u64, (nanos % NANOS_PER_SEC) as u32))
+  }
+
+  /// Converts a tick count in this timebase into the [`Duration`] it spans,
+  /// clamping at both ends of what a [`Duration`] can hold.
+  ///
+  /// The saturating rung of [`Self::checked_pts_to_duration`]: same
+  /// arithmetic, same rounding. A negative `pts` clamps to [`Duration::ZERO`]
+  /// and a span past [`Duration::MAX`] clamps to it — the two bounds of the
+  /// type, which is what saturation means for a type that has no negative
+  /// half.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_pts_to_duration(&self, pts: i64) -> Duration {
+    if pts < 0 {
+      return Duration::ZERO;
+    }
+    let nanos = self.tick_nanos(pts);
+    let secs = nanos / NANOS_PER_SEC;
+    if secs > u64::MAX as u128 {
+      return Duration::MAX;
+    }
+    Duration::new(secs as u64, (nanos % NANOS_PER_SEC) as u32)
+  }
+
+  /// `d` in ticks of this timebase, rounded to nearest with halfway cases up,
+  /// before either rung decides what to do with a count too large for an
+  /// `i64`. `self.num` must be non-zero.
+  ///
+  /// Every operand is non-negative — `num >= 0` and `den > 0` by construction,
+  /// and a [`Duration`] is unsigned — so `as u128` widens rather than
+  /// sign-extends, and "away from zero" is "up".
+  ///
+  /// The widest intermediate is `Duration::MAX` in nanoseconds (just under
+  /// `2^64 * 10^9`, so under `2^94`) times an `i32::MAX` denominator: under
+  /// `2^125`, against `u128`'s `2^128`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  const fn duration_ticks(&self, d: Duration) -> u128 {
+    // ticks = duration_ns * den / (num * 1e9)
+    let numerator = d.as_nanos() * (self.den.get() as u128);
+    let denominator = (self.num as u128) * NANOS_PER_SEC;
+    div_round_half_up(numerator, denominator)
+  }
+
+  /// A `pts` in nanoseconds under this timebase, rounded to nearest with
+  /// halfway cases up, before either rung decides what to do with a span too
+  /// long for a [`Duration`]. `pts` must be non-negative — both callers refuse
+  /// a negative one first, which is what makes `as u128` a widening here.
+  ///
+  /// The widest intermediate is `i64::MAX` ticks times an `i32::MAX` numerator
+  /// times `10^9`: under `2^124`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  const fn tick_nanos(&self, pts: i64) -> u128 {
+    // nanos = pts * num * 1e9 / den
+    let numerator = (pts as u128) * (self.num as u128) * NANOS_PER_SEC;
+    div_round_half_up(numerator, self.den.get() as u128)
   }
 }
 
@@ -306,14 +613,13 @@ impl PartialEq for Timebase {
 impl Hash for Timebase {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn hash<H: Hasher>(&self, state: &mut H) {
-    // `unsigned_abs` is an exact widening here, not a magnitude collapse: the
-    // constructor guarantees `num >= 0` and `den > 0`.
-    let n = self.num.unsigned_abs();
-    let d = self.den.get().unsigned_abs();
-    // gcd(n, d) ≥ 1 because d ≥ 1.
-    let g = gcd_u32(n, d);
-    (n / g).hash(state);
-    (d / g).hash(state);
+    // Equal rationals must hash alike, and `==` here is value-based, so the
+    // canonical form is what goes into the hasher. `reduce` is that
+    // canonicalization, and reusing it keeps one gcd site rather than two that
+    // could drift apart.
+    let reduced = self.reduce();
+    reduced.num.hash(state);
+    reduced.den.get().hash(state);
   }
 }
 
@@ -416,12 +722,18 @@ impl Timestamp {
 
   /// Returns a new `Timestamp` representing the same instant in a different timebase.
   ///
-  /// Rounds toward zero via [`Timebase::rescale_pts`]; round-tripping through a
-  /// coarser timebase can lose precision.
+  /// Converts through [`Timebase::saturating_rescale`], so the new PTS is the
+  /// nearest tick of `target` (halfway cases away from zero); round-tripping
+  /// through a coarser timebase can still lose precision.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `target.num() == 0`, as [`Timebase::saturating_rescale`] does:
+  /// a degenerate timebase names one instant, and cannot receive another.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn rescale_to(self, target: Timebase) -> Self {
     Self {
-      pts: self.timebase.rescale(self.pts, target),
+      pts: self.timebase.saturating_rescale(self.pts, target),
       timebase: target,
     }
   }
@@ -435,7 +747,7 @@ impl Timestamp {
   /// immediately.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn saturating_sub_duration(self, d: Duration) -> Self {
-    let units = self.timebase.duration_to_pts(d);
+    let units = self.timebase.saturating_duration_to_pts(d);
     Self::new(self.pts.saturating_sub(units), self.timebase)
   }
 
@@ -448,13 +760,13 @@ impl Timestamp {
   /// detector will stop waiting at.
   ///
   /// Saturating in both steps, and only the second is visible in the result:
-  /// [`Timebase::duration_to_pts`] itself saturates when `d` is enormous for
-  /// this timebase, so a saturated answer can mean either "the duration did
-  /// not fit" or "the sum did not". Both say the same thing about the
-  /// instant — it is past the end of what an `i64` PTS can name.
+  /// [`Timebase::saturating_duration_to_pts`] itself saturates when `d` is
+  /// enormous for this timebase, so a saturated answer can mean either "the
+  /// duration did not fit" or "the sum did not". Both say the same thing about
+  /// the instant — it is past the end of what an `i64` PTS can name.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn saturating_add_duration(self, d: Duration) -> Self {
-    let units = self.timebase.duration_to_pts(d);
+    let units = self.timebase.saturating_duration_to_pts(d);
     Self::new(self.pts.saturating_add(units), self.timebase)
   }
 
@@ -603,10 +915,13 @@ impl PartialOrd for Timestamp {
 /// negative PTS (pre-roll, or an edit list) signs the whole rendering:
 /// `-0:00:01.500`.
 ///
-/// The instant is **truncated toward zero** at millisecond resolution, as
-/// [`Timebase::rescale_pts`] truncates. So this form is lossy twice over: below
-/// a millisecond nothing survives, and the timebase the PTS was counted in is
-/// not shown at all. One consequence is worth stating outright — a PTS smaller
+/// The instant is **truncated toward zero** at millisecond resolution, and
+/// deliberately not rounded the way the rescale ladder rounds (see
+/// [`Timebase::checked_rescale`]): a clock is read as elapsed time, and must
+/// not name an instant the stream has not reached yet. So this form is lossy
+/// twice over: below a millisecond nothing survives, and the timebase the PTS
+/// was counted in is not shown at all. One consequence is worth stating
+/// outright — a PTS smaller
 /// in magnitude than one millisecond renders `0:00:00.000` *without* a sign,
 /// because the value being printed is zero and a signed zero would claim a
 /// precision this form does not have.
@@ -831,14 +1146,19 @@ impl TimeRange {
 
   /// Returns a new `TimeRange` representing the same span in a different timebase.
   ///
-  /// Rescales both endpoints via [`Timebase::rescale_pts`] (rounds toward zero);
-  /// round-tripping through a coarser timebase can lose precision. Because
-  /// rescaling is monotonic, the `start <= end` invariant is preserved.
+  /// Rescales both endpoints via [`Timebase::saturating_rescale`], to the
+  /// nearest tick of `target`; round-tripping through a coarser timebase can
+  /// lose precision. Because rescaling is monotonic, the `start <= end`
+  /// invariant is preserved.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `target.num() == 0`, as [`Timebase::saturating_rescale`] does.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn rescale_to(self, target: Timebase) -> Self {
     Self {
-      start: self.timebase.rescale(self.start, target),
-      end: self.timebase.rescale(self.end, target),
+      start: self.timebase.saturating_rescale(self.start, target),
+      end: self.timebase.saturating_rescale(self.end, target),
       timebase: target,
     }
   }
@@ -958,6 +1278,82 @@ mod de {
 #[cfg(feature = "serde")]
 use de::{de_den, de_num};
 
+/// The [well-known roster](Timebase#the-well-known-roster) as one table.
+///
+/// [`Timebase::from_name`] reads it forward and [`Timebase::well_known_name`]
+/// reads it backward, so a constant listed here is reachable from both
+/// directions or from neither — there is no second table to forget. The
+/// backward direction is single-valued only because no two entries are equal;
+/// `well_known_timebases_are_pairwise_distinct` pins that.
+const WELL_KNOWN: &[(&str, Timebase)] = &[
+  ("SECONDS", Timebase::SECONDS),
+  ("MILLIS", Timebase::MILLIS),
+  ("MICROS", Timebase::MICROS),
+  ("NANOS", Timebase::NANOS),
+  ("MPEG_90K", Timebase::MPEG_90K),
+  ("HZ_48K", Timebase::HZ_48K),
+  ("HZ_44_1K", Timebase::HZ_44_1K),
+  ("NTSC_FILM", Timebase::NTSC_FILM),
+  ("NTSC_VIDEO", Timebase::NTSC_VIDEO),
+  ("FILM_24", Timebase::FILM_24),
+  ("PAL_25", Timebase::PAL_25),
+];
+
+/// The exact quotient of a rescale, in `i128` and rounded, before either rung
+/// of the ladder decides what to do with one that does not fit an `i64`.
+///
+/// The caller must have ruled out `to.num == 0`; with that out of the way the
+/// divisor is strictly positive, because `den > 0` is a constructor invariant
+/// on both timebases — which is the whole of the sign analysis this ladder
+/// needs, the numerator carrying `pts`'s sign alone.
+#[cfg_attr(not(tarpaulin), inline(always))]
+const fn rescaled(pts: i64, from: Timebase, to: Timebase) -> i128 {
+  // pts * (from.num / from.den) / (to.num / to.den)
+  // = pts * from.num * to.den / (from.den * to.num)
+  let numerator = (pts as i128) * (from.num as i128) * (to.den.get() as i128);
+  let denominator = (from.den.get() as i128) * (to.num as i128);
+  div_round_half_away(numerator, denominator)
+}
+
+/// Integer division rounding to nearest, halfway cases **away from zero** —
+/// the posture FFmpeg's `av_rescale` and `av_rescale_q` take by default
+/// (`AV_ROUND_NEAR_INF`), which is why this crate takes it: a PTS rescaled
+/// here and by the C library must land on the same tick.
+///
+/// `d` must be strictly positive, so `n` alone carries the sign and `%` (which
+/// takes the sign of the dividend) hands back a remainder whose sign says
+/// which way "away from zero" points.
+///
+/// Doubling the remainder rather than halving the divisor is what makes the
+/// halfway test exact for an odd divisor. It cannot overflow at any input this
+/// crate can form: `|r| < d`, and `d` is a product of two `i32`s, so `2·|r|`
+/// stays under `2^63`.
+#[cfg_attr(not(tarpaulin), inline(always))]
+const fn div_round_half_away(n: i128, d: i128) -> i128 {
+  let q = n / d;
+  let r = n % d;
+  if r > 0 && 2 * r >= d {
+    q + 1
+  } else if r < 0 && -2 * r >= d {
+    q - 1
+  } else {
+    q
+  }
+}
+
+/// [`div_round_half_away`] where both operands are known non-negative, so
+/// "away from zero" is "up" and the sign analysis disappears.
+///
+/// `d` must be non-zero. `2·r` cannot overflow: `r < d`, and every `d` formed
+/// here is a product of an `i32` with at most `10^9`, so it stays under
+/// `2^62`.
+#[cfg_attr(not(tarpaulin), inline(always))]
+const fn div_round_half_up(n: u128, d: u128) -> u128 {
+  let q = n / d;
+  let r = n % d;
+  if 2 * r >= d { q + 1 } else { q }
+}
+
 #[cfg_attr(not(tarpaulin), inline(always))]
 const fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
   while b != 0 {
@@ -989,15 +1385,16 @@ fn write_clock(f: &mut fmt::Formatter<'_>, pts: i64, timebase: Timebase) -> fmt:
   const SECS_PER_MIN: u128 = 60;
   const MINS_PER_HOUR: u128 = 60;
 
-  // Promoted to `i128` for the same reason `rescale_pts` promotes: the product
-  // overflows `i64` long before the operands are unreasonable. The bound is
-  // generous — |pts| ≤ 2^63, `num` < 2^31 by the constructor's sign invariant,
-  // and the millisecond factor is < 2^10, so the numerator stays under 2^104
-  // against `i128`'s 2^127. Dividing by `den ≥ 1` cannot grow it.
+  // Promoted to `i128` for the same reason the rescale ladder promotes: the
+  // product overflows `i64` long before the operands are unreasonable. The
+  // bound is generous — |pts| ≤ 2^63, `num` < 2^31 by the constructor's sign
+  // invariant, and the millisecond factor is < 2^10, so the numerator stays
+  // under 2^104 against `i128`'s 2^127. Dividing by `den ≥ 1` cannot grow it.
   //
-  // One truncating division, toward zero, matching `rescale_pts`. `den` is
-  // `NonZeroI32`, so a zero numerator (a legal degenerate timebase) collapses
-  // every PTS onto zero rather than dividing by zero.
+  // One truncating division, toward zero — *not* the ladder's rounding, for
+  // the reason the `Display` docs give. `den` is `NonZeroI32`, so a zero
+  // numerator (a legal degenerate timebase) collapses every PTS onto zero
+  // rather than dividing by zero.
   let total_ms =
     (pts as i128) * (timebase.num as i128) * (MS_PER_SEC as i128) / (timebase.den.get() as i128);
 
@@ -1128,6 +1525,9 @@ const _: () = {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod property_tests;
 
 #[cfg(all(test, feature = "serde"))]
 mod serde_impl_tests;

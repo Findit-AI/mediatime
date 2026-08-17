@@ -1,12 +1,5 @@
 use super::*;
 
-const fn nz(n: i32) -> NonZeroI32 {
-  match NonZeroI32::new(n) {
-    Some(v) => v,
-    None => panic!("zero"),
-  }
-}
-
 fn hash_of<T: Hash>(v: &T) -> u64 {
   use std::collections::hash_map::DefaultHasher;
   let mut h = DefaultHasher::new();
@@ -17,37 +10,154 @@ fn hash_of<T: Hash>(v: &T) -> u64 {
 #[test]
 fn rescale_identity() {
   let tb = Timebase::new(1, nz(1000));
-  assert_eq!(Timebase::rescale_pts(42, tb, tb), 42);
-  assert_eq!(tb.rescale(42, tb), 42);
+  assert_eq!(tb.checked_rescale(42, tb), Some(42));
+  assert_eq!(tb.saturating_rescale(42, tb), 42);
 }
 
 #[test]
 fn rescale_between_timebases() {
-  let ms = Timebase::new(1, nz(1000));
-  let mpeg = Timebase::new(1, nz(90_000));
-  assert_eq!(Timebase::rescale_pts(1000, ms, mpeg), 90_000);
-  assert_eq!(ms.rescale(1000, mpeg), 90_000);
-  assert_eq!(mpeg.rescale(90_000, ms), 1000);
+  let ms = Timebase::MILLIS;
+  let mpeg = Timebase::MPEG_90K;
+  assert_eq!(ms.checked_rescale(1000, mpeg), Some(90_000));
+  assert_eq!(ms.saturating_rescale(1000, mpeg), 90_000);
+  assert_eq!(mpeg.checked_rescale(90_000, ms), Some(1000));
 }
 
 #[test]
-fn rescale_rounds_toward_zero() {
-  let from = Timebase::new(1, nz(1000));
-  let to = Timebase::new(1, nz(3));
-  assert_eq!(from.rescale(1, to), 0);
-  assert_eq!(from.rescale(-1, to), 0);
+fn rescale_rounds_to_nearest() {
+  // 1 ms is 0.003 of a 1/3-second tick — nearest is still zero, at both
+  // signs.
+  let ms = Timebase::MILLIS;
+  let thirds = Timebase::new(1, nz(3));
+  assert_eq!(ms.checked_rescale(1, thirds), Some(0));
+  assert_eq!(ms.checked_rescale(-1, thirds), Some(0));
+
+  // 400 ms is 1.2 ticks and 600 ms is 1.8 — truncation would call both 1.
+  assert_eq!(ms.checked_rescale(400, thirds), Some(1));
+  assert_eq!(ms.checked_rescale(600, thirds), Some(2));
+  assert_eq!(ms.checked_rescale(-400, thirds), Some(-1));
+  assert_eq!(ms.checked_rescale(-600, thirds), Some(-2));
 }
 
 #[test]
-fn rescale_saturates_on_i64_overflow() {
+fn rescale_breaks_ties_away_from_zero() {
+  // 500 ms is exactly 1.5 ticks of 1/3 s. `AV_ROUND_NEAR_INF` — FFmpeg's
+  // default for `av_rescale` and `av_rescale_q`, and this crate's — sends it
+  // to 2, and its mirror to -2; rounding half *up* would have said -1.
+  let ms = Timebase::MILLIS;
+  let thirds = Timebase::new(1, nz(3));
+  assert_eq!(ms.checked_rescale(500, thirds), Some(2));
+  assert_eq!(ms.checked_rescale(-500, thirds), Some(-2));
+  assert_eq!(ms.saturating_rescale(500, thirds), 2);
+  assert_eq!(ms.saturating_rescale(-500, thirds), -2);
+
+  // An odd count of half-seconds into whole seconds is the smallest tie
+  // there is, and the one an odd denominator cannot express.
+  let half = Timebase::new(1, nz(2));
+  assert_eq!(half.checked_rescale(1, Timebase::SECONDS), Some(1));
+  assert_eq!(half.checked_rescale(-1, Timebase::SECONDS), Some(-1));
+  assert_eq!(half.checked_rescale(3, Timebase::SECONDS), Some(2));
+  assert_eq!(half.checked_rescale(-3, Timebase::SECONDS), Some(-2));
+}
+
+#[test]
+fn rescale_saturates_or_refuses_on_i64_overflow() {
   // Rescale from a coarse timebase (i32::MAX seconds per tick) to a fine
   // one (1/i32::MAX seconds per tick): even a modest pts blows past
-  // i64::MAX in the 128-bit intermediate. `rescale_pts` should saturate
-  // to i64::MAX / i64::MIN rather than wrap via `as i64`.
+  // i64::MAX in the 128-bit intermediate. The checked rung refuses; the
+  // saturating one clamps rather than wrapping via `as i64`.
   let from = Timebase::new(i32::MAX, nz(1));
   let to = Timebase::new(1, nz(i32::MAX));
-  assert_eq!(from.rescale(1_000_000, to), i64::MAX);
-  assert_eq!(from.rescale(-1_000_000, to), i64::MIN);
+  assert_eq!(from.checked_rescale(1_000_000, to), None);
+  assert_eq!(from.checked_rescale(-1_000_000, to), None);
+  assert_eq!(from.saturating_rescale(1_000_000, to), i64::MAX);
+  assert_eq!(from.saturating_rescale(-1_000_000, to), i64::MIN);
+}
+
+#[test]
+fn rescale_refuses_a_degenerate_target() {
+  // A degenerate timebase names one single instant, so no tick count in it
+  // can stand for another one. The checked rung says so.
+  let degenerate = Timebase::new(0, nz(3));
+  assert_eq!(Timebase::MILLIS.checked_rescale(1000, degenerate), None);
+  assert_eq!(Timebase::MILLIS.checked_rescale(0, degenerate), None);
+
+  // A degenerate *source* is not a failure: every tick of it is instant
+  // zero, and zero is representable in any target.
+  assert_eq!(degenerate.checked_rescale(999, Timebase::MILLIS), Some(0));
+  assert_eq!(degenerate.saturating_rescale(999, Timebase::MILLIS), 0);
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn saturating_rescale_panics_on_a_degenerate_target() {
+  // `i64::saturating_div`'s posture: saturation answers overflow, not a zero
+  // divisor. `checked_rescale` is the total spelling.
+  Timebase::MILLIS.saturating_rescale(1000, Timebase::new(0, nz(3)));
+}
+
+#[test]
+fn reduce_lands_in_lowest_terms() {
+  let coarse = Timebase::new(2, nz(4));
+  let reduced = coarse.reduce();
+  assert_eq!(reduced.num(), 1);
+  assert_eq!(reduced.den().get(), 2);
+  // The value never moved, so the reduced form hashes with what it came from.
+  assert_eq!(reduced, coarse);
+  assert_eq!(hash_of(&reduced), hash_of(&coarse));
+
+  // A degenerate timebase has a canonical form too, and it is 0/1.
+  let degenerate = Timebase::new(0, nz(3)).reduce();
+  assert_eq!(degenerate.num(), 0);
+  assert_eq!(degenerate.den().get(), 1);
+
+  // The widest input: gcd(i32::MAX, i32::MAX) is i32::MAX.
+  let max = Timebase::new(i32::MAX, nz(i32::MAX)).reduce();
+  assert_eq!(max.num(), 1);
+  assert_eq!(max.den().get(), 1);
+
+  // Already-reduced values come back untouched, 1001-series included.
+  for tb in [Timebase::NTSC_VIDEO, Timebase::MPEG_90K] {
+    assert_eq!(format!("{:?}", tb.reduce()), format!("{tb:?}"));
+  }
+}
+
+#[test]
+fn is_reduced_agrees_with_reduce() {
+  for (tb, expected) in [
+    (Timebase::new(1, nz(2)), true),
+    (Timebase::new(2, nz(4)), false),
+    (Timebase::new(0, nz(1)), true),
+    (Timebase::new(0, nz(3)), false),
+    (Timebase::new(1_001, nz(30_000)), true),
+    (Timebase::new(2_002, nz(60_000)), false),
+  ] {
+    assert_eq!(tb.is_reduced(), expected, "{tb}");
+    assert!(tb.reduce().is_reduced(), "{tb}");
+  }
+}
+
+#[test]
+fn checked_recip_swaps_the_halves() {
+  let film = Timebase::FILM_24;
+  let fps = film.checked_recip().expect("24 fps has a reciprocal");
+  assert_eq!(fps.num(), 24);
+  assert_eq!(fps.den().get(), 1);
+  // The reciprocal read as a frame rate is the rate the constant is named for.
+  assert_eq!(fps.frames_to_duration(24), Duration::from_secs(1));
+
+  // Round trip, structurally: nothing is reduced or normalized on the way.
+  let ntsc = Timebase::new(1_001, nz(30_000));
+  let there = ntsc.checked_recip().expect("has a reciprocal");
+  assert_eq!(there.num(), 30_000);
+  assert_eq!(there.den().get(), 1_001);
+  assert_eq!(
+    format!("{:?}", there.checked_recip().expect("and back")),
+    format!("{ntsc:?}")
+  );
+
+  // The single failure: a zero numerator is not a denominator.
+  assert_eq!(Timebase::new(0, nz(3)).checked_recip(), None);
 }
 
 #[test]
@@ -340,27 +450,194 @@ fn timebase_accessors_and_builders() {
 }
 
 #[test]
+fn the_well_known_roster_holds_the_rationals_it_names() {
+  // Each constant pinned against the convention its doc names, so a typo in a
+  // denominator is a failing test rather than a wrong timestamp downstream.
+  for (tb, num, den) in [
+    (Timebase::SECONDS, 1, 1),
+    (Timebase::MILLIS, 1, 1_000),
+    (Timebase::MICROS, 1, 1_000_000),
+    (Timebase::NANOS, 1, 1_000_000_000),
+    (Timebase::MPEG_90K, 1, 90_000),
+    (Timebase::HZ_48K, 1, 48_000),
+    (Timebase::HZ_44_1K, 1, 44_100),
+    (Timebase::NTSC_FILM, 1_001, 24_000),
+    (Timebase::NTSC_VIDEO, 1_001, 30_000),
+    (Timebase::FILM_24, 1, 24),
+    (Timebase::PAL_25, 1, 25),
+  ] {
+    assert_eq!(tb.num(), num, "{tb}");
+    assert_eq!(tb.den().get(), den, "{tb}");
+    // Stored in lowest terms, so `Display` prints the canonical rational and
+    // `reduce` is a no-op on the roster.
+    assert!(tb.is_reduced(), "{tb}");
+  }
+
+  // The frame-rate entries are the reciprocals of the rate they are named
+  // for — the trap the roster's doc warns about.
+  assert_eq!(
+    Timebase::NTSC_VIDEO
+      .checked_recip()
+      .expect("has a reciprocal")
+      .frames_to_duration(30_000),
+    Duration::from_secs(1001)
+  );
+}
+
+#[test]
+fn well_known_timebases_are_pairwise_distinct() {
+  // What makes `well_known_name` single-valued: two entries of equal value
+  // would make the reverse lookup depend on table order.
+  for (i, (name, tb)) in WELL_KNOWN.iter().enumerate() {
+    for (other_name, other) in &WELL_KNOWN[i + 1..] {
+      assert_ne!(tb, other, "{name} and {other_name} are the same rational");
+    }
+  }
+}
+
+#[test]
+fn from_name_and_well_known_name_are_one_table_read_both_ways() {
+  for (name, tb) in WELL_KNOWN {
+    assert_eq!(Timebase::from_name(name), Some(*tb), "{name}");
+    assert_eq!(tb.well_known_name(), Some(*name), "{name}");
+  }
+  assert_eq!(WELL_KNOWN.len(), 11);
+}
+
+#[test]
+fn from_name_matches_exactly_and_nothing_else() {
+  // `SCREAMING_SNAKE_CASE`, case-sensitively: the constant's own spelling and
+  // no alias, so the name in a config file is greppable in this crate.
+  for s in ["millis", "Millis", " MILLIS", "MILLIS ", "MS", "1/1000", ""] {
+    assert_eq!(Timebase::from_name(s), None, "{s:?}");
+  }
+  assert_eq!(Timebase::from_name("MILLIS"), Some(Timebase::MILLIS));
+}
+
+#[test]
+fn well_known_name_matches_by_value_not_by_spelling() {
+  // `==` on this type is value-based, and so is the name lookup: a stream
+  // that declared `2/2000` is counting milliseconds and answers to the name,
+  // even though `Display` still prints what it declared.
+  let declared = Timebase::new(2, nz(2000));
+  assert_eq!(declared.well_known_name(), Some("MILLIS"));
+  assert_eq!(format!("{declared}"), "2/2000");
+
+  // Nothing outside the roster gets a name.
+  assert_eq!(Timebase::new(1, nz(7)).well_known_name(), None);
+  assert_eq!(Timebase::new(0, nz(3)).well_known_name(), None);
+}
+
+#[test]
 fn duration_to_pts_happy_path_and_edge_cases() {
   // Integer conversion: 1.5 s @ 1/1000 → 1500 units.
-  let ms = Timebase::new(1, nz(1000));
-  assert_eq!(ms.duration_to_pts(Duration::from_millis(1500)), 1500);
-  assert_eq!(ms.duration_to_pts(Duration::ZERO), 0);
+  let ms = Timebase::MILLIS;
+  assert_eq!(
+    ms.checked_duration_to_pts(Duration::from_millis(1500)),
+    Some(1500)
+  );
+  assert_eq!(ms.checked_duration_to_pts(Duration::ZERO), Some(0));
 
   // Non-ms timebase: 2 s @ 1/90_000 → 180_000 units.
-  let mpegts = Timebase::new(1, nz(90_000));
-  assert_eq!(mpegts.duration_to_pts(Duration::from_secs(2)), 180_000,);
+  assert_eq!(
+    Timebase::MPEG_90K.checked_duration_to_pts(Duration::from_secs(2)),
+    Some(180_000)
+  );
 
-  // Degenerate: zero numerator → returns 0.
-  let degenerate = Timebase::new(0, nz(1));
-  assert_eq!(degenerate.duration_to_pts(Duration::from_secs(1)), 0,);
-
-  // Saturation at i64::MAX when the math would overflow.
-  // A frame rate of 1 fps (num=1, den=1 s) with an enormous duration:
-  // pts = ns * 1 / (1 * 1e9). Use a u64::MAX-ish nanos value via the
-  // max Duration; Rust's Duration max is ~(2^64 - 1) seconds.
-  let fps1 = Timebase::new(1, nz(1));
+  // Saturation at i64::MAX when the count would overflow — and the checked
+  // rung refusing where the saturating one clamps. One tick per second
+  // against the longest `Duration` there is: ~1.8e19 ticks against 9.2e18.
+  let seconds = Timebase::SECONDS;
   let huge = Duration::new(u64::MAX, 0);
-  assert_eq!(fps1.duration_to_pts(huge), i64::MAX);
+  assert_eq!(seconds.checked_duration_to_pts(huge), None);
+  assert_eq!(seconds.saturating_duration_to_pts(huge), i64::MAX);
+}
+
+#[test]
+fn duration_to_pts_rounds_to_nearest() {
+  // 1.5 ms is exactly half a millisecond tick past 1 — away from zero, so 2,
+  // where the truncating conversion this replaced said 1.
+  let ms = Timebase::MILLIS;
+  assert_eq!(
+    ms.checked_duration_to_pts(Duration::from_nanos(1_500_000)),
+    Some(2)
+  );
+  assert_eq!(
+    ms.checked_duration_to_pts(Duration::from_nanos(1_400_000)),
+    Some(1)
+  );
+  assert_eq!(
+    ms.checked_duration_to_pts(Duration::from_nanos(1_600_000)),
+    Some(2)
+  );
+  // Sub-tick durations round to the nearest tick rather than vanishing.
+  assert_eq!(ms.checked_duration_to_pts(Duration::from_nanos(1)), Some(0));
+  assert_eq!(
+    ms.checked_duration_to_pts(Duration::from_nanos(999_999)),
+    Some(1)
+  );
+}
+
+#[test]
+fn duration_to_pts_parts_ways_with_its_twin_on_a_degenerate_timebase() {
+  // Every tick of a `0/den` timebase is instant zero, so no count of them
+  // spans a second. The checked rung says so; the saturating one answers 0,
+  // which is the identity `Timestamp::saturating_add_duration` needs and is
+  // the *right* answer only for a zero duration.
+  let degenerate = Timebase::new(0, nz(3));
+  assert_eq!(
+    degenerate.checked_duration_to_pts(Duration::from_secs(1)),
+    None
+  );
+  assert_eq!(degenerate.checked_duration_to_pts(Duration::ZERO), None);
+  assert_eq!(
+    degenerate.saturating_duration_to_pts(Duration::from_secs(1)),
+    0
+  );
+}
+
+#[test]
+fn pts_to_duration_inverts_duration_to_pts() {
+  let ms = Timebase::MILLIS;
+  assert_eq!(
+    ms.checked_pts_to_duration(1500),
+    Some(Duration::from_millis(1500))
+  );
+  assert_eq!(ms.checked_pts_to_duration(0), Some(Duration::ZERO));
+  assert_eq!(
+    Timebase::MPEG_90K.checked_pts_to_duration(45_000),
+    Some(Duration::from_millis(500))
+  );
+
+  // One MPEG tick is 11111.11… ns, and the nearest whole nanosecond is what
+  // a `Duration` can hold.
+  assert_eq!(
+    Timebase::MPEG_90K.checked_pts_to_duration(1),
+    Some(Duration::from_nanos(11_111))
+  );
+
+  // A degenerate timebase is *not* a failure in this direction: all its ticks
+  // are instant zero, and zero is a `Duration`.
+  assert_eq!(
+    Timebase::new(0, nz(3)).checked_pts_to_duration(999),
+    Some(Duration::ZERO)
+  );
+}
+
+#[test]
+fn pts_to_duration_saturates_at_both_ends_of_a_duration() {
+  let ms = Timebase::MILLIS;
+  // A negative PTS is ordinary (pre-roll, edit lists) and has no `Duration`;
+  // the saturating rung clamps to the floor of the type.
+  assert_eq!(ms.checked_pts_to_duration(-1), None);
+  assert_eq!(ms.saturating_pts_to_duration(-1), Duration::ZERO);
+  assert_eq!(ms.saturating_pts_to_duration(i64::MIN), Duration::ZERO);
+
+  // Past the ceiling: i32::MAX seconds per tick, i64::MAX ticks — about 2^94
+  // seconds against a u64 seconds field.
+  let coarse = Timebase::new(i32::MAX, nz(1));
+  assert_eq!(coarse.checked_pts_to_duration(i64::MAX), None);
+  assert_eq!(coarse.saturating_pts_to_duration(i64::MAX), Duration::MAX);
 }
 
 #[test]
@@ -442,8 +719,8 @@ fn saturating_add_duration_is_the_forward_twin() {
     i64::MAX
   );
 
-  // A duration too large for the timebase saturates inside `duration_to_pts`,
-  // before the addition ever runs.
+  // A duration too large for the timebase saturates inside
+  // `saturating_duration_to_pts`, before the addition ever runs.
   assert_eq!(
     Timestamp::new(0, tb)
       .saturating_add_duration(Duration::MAX)

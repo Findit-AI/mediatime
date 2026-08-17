@@ -1,11 +1,6 @@
 use super::*;
 
-const fn nz(n: i32) -> NonZeroI32 {
-  match NonZeroI32::new(n) {
-    Some(v) => v,
-    None => panic!("zero"),
-  }
-}
+use crate::{WELL_KNOWN, nz};
 
 /// The derived `Debug` prints every field, which makes it the *structural*
 /// comparison this crate's `PartialEq` deliberately is not: `2/4 == 1/2`
@@ -64,6 +59,49 @@ fn timebase_parse_rejects_what_the_constructor_rejects() {
   // The constructor's sign invariants are what the arithmetic assumes, so
   // parsing must not be a second way in.
   for s in ["-1/1000", "1/0", "1/-1000", "-1/-1"] {
+    assert_eq!(s.parse::<Timebase>(), Err(ParseTimebaseError(())), "{s}");
+  }
+}
+
+#[test]
+fn timebase_parses_a_well_known_name_on_its_other_arm() {
+  // The roster arm is tried first; `Display` is unchanged, so the round trip
+  // it inverts still goes through `num/den`.
+  for (name, expected) in WELL_KNOWN {
+    assert_same_fields(&name.parse::<Timebase>().expect("parses"), expected);
+    assert_eq!(
+      format!("{expected}"),
+      format!("{}/{}", expected.num(), expected.den())
+    );
+  }
+
+  // Whitespace is trimmed around a name as it is around a rational.
+  assert_same_fields(
+    &"  MPEG_90K  ".parse::<Timebase>().expect("parses"),
+    &Timebase::MPEG_90K,
+  );
+
+  // The name is an input convenience only: two spellings, one value, and the
+  // rendering is always the rational.
+  assert_eq!("MILLIS".parse::<Timebase>(), "1/1000".parse::<Timebase>());
+
+  // The composite parsers inherit the arm, since they parse their timebase
+  // half through this impl.
+  assert_same_fields(
+    &"12345 @ MPEG_90K".parse::<Timestamp>().expect("parses"),
+    &Timestamp::new(12_345, Timebase::MPEG_90K),
+  );
+  assert_same_fields(
+    &"[100, 500) @ MILLIS".parse::<TimeRange>().expect("parses"),
+    &TimeRange::new(100, 500, Timebase::MILLIS),
+  );
+}
+
+#[test]
+fn timebase_parse_rejects_a_name_that_is_not_on_the_roster() {
+  // Case-sensitive and exact, per `Timebase::from_name`; nothing falls
+  // through to the rational arm, which has no slash to find.
+  for s in ["millis", "MILLI", "MPEG90K", "SECOND", "NTSC"] {
     assert_eq!(s.parse::<Timebase>(), Err(ParseTimebaseError(())), "{s}");
   }
 }
@@ -210,7 +248,7 @@ fn parse_errors_name_the_grammar_they_wanted() {
 
   assert_eq!(
     message(&ParseTimebaseError(())),
-    "expected a timebase `num/den`, with num >= 0 and den > 0"
+    "expected a timebase `num/den` with num >= 0 and den > 0, or a well-known name"
   );
   assert_eq!(
     message(&ParseTimestampError(())),
