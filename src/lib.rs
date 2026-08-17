@@ -622,7 +622,11 @@ impl fmt::Display for Timestamp {
 /// different timebases, rescale one of them first (e.g., by calling
 /// [`Timestamp::rescale_to`] on each endpoint).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(
+  feature = "serde",
+  derive(Serialize, Deserialize),
+  serde(try_from = "de::TimeRangeRepr")
+)]
 #[cfg_attr(
   feature = "quickcheck",
   derive(::quickcheck_richderive::Arbitrary),
@@ -852,19 +856,25 @@ impl fmt::Display for TimeRange {
   }
 }
 
-/// Field validators for [`Timebase`]'s derived `Deserialize`.
+/// Validators keeping `Deserialize` from being a second construction path.
 ///
-/// The derive assigns fields directly, bypassing [`Timebase::new`]. While the
-/// fields were `u32`/`NonZeroU32` their types made every invariant violation
-/// unrepresentable; `i32`/`NonZeroI32` no longer do, so deserialization would
-/// otherwise be a second construction path that can mint a `Timebase` the
-/// constructor rejects. The two invariants are independent per field, so a
+/// A derived `Deserialize` assigns fields directly, so every invariant the
+/// constructors enforce has to be re-enforced here or it is not enforced at
+/// all: an inbound payload would otherwise mint values the constructors
+/// reject, and the arithmetic assumes those are unreachable.
+///
+/// [`Timebase`]'s two invariants are independent per field, so a
 /// `deserialize_with` on each is enough — no intermediate representation and
-/// no allocation.
+/// no allocation. (While the fields were `u32`/`NonZeroU32` their types made
+/// the violations unrepresentable; `i32`/`NonZeroI32` no longer do.)
+/// [`TimeRange`]'s `start <= end` relates two fields, which no per-field hook
+/// can see, so that one needs the whole struct in hand first.
 #[cfg(feature = "serde")]
 mod de {
-  use core::num::NonZeroI32;
+  use core::{fmt, num::NonZeroI32};
   use serde::{Deserialize, Deserializer, de::Error};
+
+  use crate::{TimeRange, Timebase};
 
   pub(super) fn de_num<'de, D: Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
     let v = i32::deserialize(d)?;
@@ -880,6 +890,35 @@ mod de {
       return Err(D::Error::custom("timebase denominator must be positive"));
     }
     Ok(v)
+  }
+
+  /// The wire shape of a [`TimeRange`], deserialized before the endpoint
+  /// order is checked.
+  ///
+  /// Field names and their required-ness are the compatibility surface and
+  /// match the `Serialize` half exactly; only the check is added.
+  #[derive(Deserialize)]
+  pub(super) struct TimeRangeRepr {
+    start: i64,
+    end: i64,
+    timebase: Timebase,
+  }
+
+  /// A [`TimeRange`] arrived with its endpoints in the wrong order.
+  pub(super) struct InvertedRange;
+
+  impl fmt::Display for InvertedRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      f.write_str("time range end must not precede start")
+    }
+  }
+
+  impl TryFrom<TimeRangeRepr> for TimeRange {
+    type Error = InvertedRange;
+
+    fn try_from(repr: TimeRangeRepr) -> Result<Self, Self::Error> {
+      Self::try_new(repr.start, repr.end, repr.timebase).ok_or(InvertedRange)
+    }
   }
 }
 

@@ -1,12 +1,63 @@
 use super::*;
 use serde::{
-  Deserialize,
-  de::value::{Error, MapDeserializer},
+  Deserialize, Deserializer,
+  de::{
+    IntoDeserializer, Visitor,
+    value::{Error, MapDeserializer},
+  },
+  forward_to_deserialize_any,
 };
 
 fn de(num: i32, den: i32) -> Result<Timebase, Error> {
   Timebase::deserialize(MapDeserializer::new(
     [("numerator", num), ("denominator", den)].into_iter(),
+  ))
+}
+
+/// The two value shapes a `TimeRange` map holds: an integer endpoint and a
+/// nested timebase map. serde's `de::value` helpers only build *homogeneous*
+/// maps, and no self-describing format is among this crate's dev-dependencies,
+/// so the heterogeneous map is built here instead.
+enum Field {
+  Pts(i64),
+  Timebase(i32, i32),
+}
+
+impl IntoDeserializer<'_, Error> for Field {
+  type Deserializer = Self;
+
+  fn into_deserializer(self) -> Self {
+    self
+  }
+}
+
+impl<'de> Deserializer<'de> for Field {
+  type Error = Error;
+
+  fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    match self {
+      Self::Pts(v) => visitor.visit_i64(v),
+      Self::Timebase(num, den) => visitor.visit_map(MapDeserializer::new(
+        [("numerator", num), ("denominator", den)].into_iter(),
+      )),
+    }
+  }
+
+  forward_to_deserialize_any! {
+    bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+    bytes byte_buf option unit unit_struct newtype_struct seq tuple
+    tuple_struct map struct enum identifier ignored_any
+  }
+}
+
+fn de_range(start: i64, end: i64, num: i32, den: i32) -> Result<TimeRange, Error> {
+  TimeRange::deserialize(MapDeserializer::new(
+    [
+      ("start", Field::Pts(start)),
+      ("end", Field::Pts(end)),
+      ("timebase", Field::Timebase(num, den)),
+    ]
+    .into_iter(),
   ))
 }
 
@@ -37,6 +88,76 @@ fn field_names_are_unchanged() {
   let by_wrong_name: Result<Timebase, Error> =
     Timebase::deserialize(MapDeserializer::new([("num", 1), ("den", 2)].into_iter()));
   assert!(by_wrong_name.is_err());
+}
+
+#[test]
+fn time_range_deserialize_accepts_what_the_constructor_accepts() {
+  let ms = Timebase::new(1, nz(1000));
+  assert_eq!(
+    de_range(1500, 3250, 1, 1000).unwrap(),
+    TimeRange::new(1500, 3250, ms)
+  );
+  // Degenerate instant, and a negative start (pre-roll) both stay legal.
+  assert_eq!(
+    de_range(42, 42, 1, 1000).unwrap(),
+    TimeRange::new(42, 42, ms)
+  );
+  assert_eq!(
+    de_range(-1500, 0, 1, 1000).unwrap(),
+    TimeRange::new(-1500, 0, ms)
+  );
+}
+
+#[test]
+fn time_range_deserialize_rejects_backwards_endpoints() {
+  // `start <= end` spans two fields, so no per-field validator can see it.
+  // Without the whole-struct check this decoded, and `TimeRange::duration`
+  // then panicked on a value that `new` and `try_new` both refuse.
+  assert!(de_range(3250, 1500, 1, 1000).is_err());
+  assert!(de_range(0, i64::MIN, 1, 1000).is_err());
+}
+
+#[test]
+fn time_range_deserialize_still_validates_its_timebase() {
+  // The nested `Timebase` keeps its own field validators through the
+  // intermediate representation.
+  assert!(de_range(0, 10, -1, 1000).is_err());
+  assert!(de_range(0, 10, 1, 0).is_err());
+  assert!(de_range(0, 10, 1, -1000).is_err());
+}
+
+#[test]
+fn time_range_field_names_are_unchanged() {
+  // The intermediate representation is invisible on the wire: same three
+  // names, all still required.
+  let renamed: Result<TimeRange, Error> = TimeRange::deserialize(MapDeserializer::new(
+    [
+      ("from", Field::Pts(0)),
+      ("to", Field::Pts(10)),
+      ("timebase", Field::Timebase(1, 1000)),
+    ]
+    .into_iter(),
+  ));
+  assert!(renamed.is_err());
+
+  let missing_end: Result<TimeRange, Error> = TimeRange::deserialize(MapDeserializer::new(
+    [
+      ("start", Field::Pts(0)),
+      ("timebase", Field::Timebase(1, 1000)),
+    ]
+    .into_iter(),
+  ));
+  assert!(missing_end.is_err());
+}
+
+#[test]
+fn time_range_decode_preserves_every_field() {
+  // The intermediate representation must hand back what arrived, unreduced
+  // and unrescaled. Compared through `Debug` because `==` on this type is
+  // partly semantic: `30000/1001` and `60000/2002` are one timebase to it.
+  let original = TimeRange::new(1500, 3250, Timebase::new(30_000, nz(1001)));
+  let decoded = de_range(1500, 3250, 30_000, 1001).expect("decodes");
+  assert_eq!(format!("{decoded:?}"), format!("{original:?}"));
 }
 
 const fn nz(n: i32) -> NonZeroI32 {
