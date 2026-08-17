@@ -662,6 +662,12 @@ impl fmt::Display for Timebase {
 /// except under a degenerate `0/den` timebase, where every PTS names instant
 /// zero and the counts therefore say nothing about the instants: those fall
 /// back to the cross-multiply, and all of them compare equal.
+///
+/// This type is the one of the three that **has an [`Ord`]**, and it is
+/// [`Self::cmp_semantic`] — instants are totally ordered by *when* they are,
+/// which is the only reading of "before" a timestamp has, so there is nothing
+/// for a derived order to disagree with. [`SignedDuration`] and [`TimeRange`]
+/// each have a second reading and therefore no `Ord` at all.
 #[derive(Debug, Default, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
@@ -1075,15 +1081,20 @@ impl fmt::Display for Timestamp {
 ///
 /// # Equality and ordering
 ///
-/// Both are derived, and so both are **structural**: the tick count is
-/// compared as written, and only the timebase is compared by value, as
-/// [`Timebase`]'s own `==` does. `1000 @ 1/1000` therefore equals
-/// `1000 @ 2/2000` but not `1 @ 1/1`, though both measure one second. [`Hash`]
-/// agrees with that equality.
+/// Equality is derived, and so **structural**: the tick count is compared as
+/// written, and only the timebase is compared by value, as [`Timebase`]'s own
+/// `==` does. `1000 @ 1/1000` therefore equals `1000 @ 2/2000` but not
+/// `1 @ 1/1`, though both measure one second. [`Hash`] agrees with that
+/// equality.
 ///
-/// [`Self::cmp_semantic`] is the comparison by measured time — the one that
-/// calls those two spans equal, and the one to sort by length with
-/// (`spans.sort_by(SignedDuration::cmp_semantic)`).
+/// There is **no [`Ord`]**, which is the posture [`TimeRange`] takes too and
+/// [`Timestamp`] does not; each of the three says why in its own section. A
+/// derived order would be that same structural comparison, count first, and
+/// would put
+/// the *longer* of two spans below the shorter one whenever they are counted
+/// in different timebases; the semantic order cannot be `Ord` either, because
+/// it disagrees with the structural `==` these spans are hashed by. So the
+/// order is asked for by name:
 ///
 /// ```
 /// use mediatime::{SignedDuration, Timebase};
@@ -1092,8 +1103,21 @@ impl fmt::Display for Timestamp {
 /// let b = SignedDuration::new(1_000, Timebase::MILLIS);
 /// assert_ne!(a, b); // different counts
 /// assert!(a.cmp_semantic(&b).is_eq()); // the same second
+///
+/// let mut spans = [SignedDuration::new(2, Timebase::SECONDS), a, b];
+/// spans.sort_by(SignedDuration::cmp_semantic); // by length: 1s, 1000ms, 2s
+/// assert_eq!(spans[2].ticks(), 2);
 /// ```
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// `spans.sort()` does not compile, and that is the point of the section:
+///
+/// ```compile_fail,E0277
+/// use mediatime::{SignedDuration, Timebase};
+///
+/// let mut spans = [SignedDuration::new(1, Timebase::SECONDS)];
+/// spans.sort(); // the trait bound `SignedDuration: Ord` is not satisfied
+/// ```
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
   feature = "quickcheck",
@@ -1288,7 +1312,8 @@ impl SignedDuration {
   }
 
   /// Compares two spans by the time they measure, rescaling if the timebases
-  /// differ — the semantic order the derived [`Ord`] deliberately is not.
+  /// differ — the order this type deliberately has no [`Ord`] for, to be
+  /// passed by name: `spans.sort_by(SignedDuration::cmp_semantic)`.
   ///
   /// Uses a 128-bit cross-multiply for the mixed-timebase case: no division,
   /// so no rounding error, and a negative count needs no special handling.
@@ -1321,6 +1346,21 @@ impl SignedDuration {
 /// Both endpoints share the same [`Timebase`]. To compare ranges across
 /// different timebases, rescale one of them first (e.g., by calling
 /// [`Timestamp::rescale_to`] on each endpoint).
+///
+/// # Equality and ordering
+///
+/// Equality is derived, and so **structural**: both counts are compared as
+/// written, and only the timebase is compared by value. `[1500, 3250) @ 1/1000`
+/// therefore equals the same pair over `2/2000` but not `[135_000, 292_500)`
+/// over `1/90000`, though they cover the same stretch of time. [`Hash`] agrees
+/// with that equality.
+///
+/// There is **no [`Ord`]**, the posture [`SignedDuration`] takes as well.
+/// Ranges have no single order to derive: by start, by end and by length are
+/// three different answers, and overlapping ranges are not ordered at all.
+/// Compare the part you mean — [`Self::start`] and [`Self::end`] hand back
+/// [`Timestamp`]s, which *are* ordered, and by the instant rather than by the
+/// count.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(
   feature = "serde",

@@ -1228,22 +1228,35 @@ fn signed_duration_equality_is_structural_and_cmp_semantic_is_not() {
   let declared = SignedDuration::new(1_000, Timebase::new(2, nz(2000)));
   assert_eq!(one_thousand_ms, declared);
   assert_eq!(hash_of(&one_thousand_ms), hash_of(&declared));
+}
 
-  // The derived order is that same structural comparison — the count first —
-  // so the longer of two spans can order *below* the shorter one. This is the
-  // trap `cmp_semantic` exists to step around.
-  let two_seconds = SignedDuration::new(2, Timebase::SECONDS);
-  assert!(two_seconds < one_thousand_ms);
-  assert!(two_seconds.cmp_semantic(&one_thousand_ms).is_gt());
+#[test]
+fn spans_sort_by_length_only_when_asked_to() {
+  // Two spellings of one second, a longer span and a shorter one, deliberately
+  // mixed: the count alone puts `2 @ 1/1` below `1000 @ 1/1000`, which is the
+  // order a derived `Ord` would have handed out and the reason there is none.
+  let mut spans = [
+    SignedDuration::new(2, Timebase::SECONDS),
+    SignedDuration::new(1_000, Timebase::MILLIS),
+    SignedDuration::new(-1, Timebase::SECONDS),
+    SignedDuration::new(1, Timebase::SECONDS),
+    SignedDuration::new(500, Timebase::MILLIS),
+  ];
+  spans.sort_by(SignedDuration::cmp_semantic);
 
-  // Within one timebase the two agree, which is the case the derived order is
-  // good for.
-  assert!(SignedDuration::new(2_000, Timebase::MILLIS) > one_thousand_ms);
-  assert!(
-    SignedDuration::new(2_000, Timebase::MILLIS)
-      .cmp_semantic(&one_thousand_ms)
-      .is_gt()
-  );
+  // -1s, 500ms, then the two one-second spans in the order they were written
+  // (`sort_by` is stable and calls them equal), then 2s.
+  assert_eq!(spans[0].ticks(), -1);
+  assert_eq!(spans[1].ticks(), 500);
+  assert_eq!(spans[2], SignedDuration::new(1_000, Timebase::MILLIS));
+  assert_eq!(spans[3], SignedDuration::new(1, Timebase::SECONDS));
+  assert_eq!(spans[4].ticks(), 2);
+
+  for (i, shorter) in spans.iter().enumerate() {
+    for longer in &spans[i + 1..] {
+      assert!(shorter.cmp_semantic(longer).is_le());
+    }
+  }
 }
 
 #[test]
