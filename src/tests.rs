@@ -420,6 +420,50 @@ fn saturating_sub_duration_saturates() {
 }
 
 #[test]
+fn saturating_add_duration_is_the_forward_twin() {
+  let tb = Timebase::new(1, nz(1000));
+
+  // Normal case, and the round trip back through the backward twin.
+  let ts = Timestamp::new(1500, tb);
+  let shifted = ts.saturating_add_duration(Duration::from_millis(500));
+  assert_eq!(shifted.pts(), 2000);
+  assert_eq!(shifted.timebase(), tb);
+  assert_eq!(
+    shifted.saturating_sub_duration(Duration::from_millis(500)),
+    ts
+  );
+
+  // Saturates at the ceiling rather than wrapping.
+  let near_ceiling = Timestamp::new(i64::MAX - 10, tb);
+  assert_eq!(
+    near_ceiling
+      .saturating_add_duration(Duration::from_secs(1))
+      .pts(),
+    i64::MAX
+  );
+
+  // A duration too large for the timebase saturates inside `duration_to_pts`,
+  // before the addition ever runs.
+  assert_eq!(
+    Timestamp::new(0, tb)
+      .saturating_add_duration(Duration::MAX)
+      .pts(),
+    i64::MAX
+  );
+
+  // Zero is the identity; a degenerate timebase converts every duration to
+  // zero units, so it is the identity there too.
+  assert_eq!(ts.saturating_add_duration(Duration::ZERO), ts);
+  let degenerate = Timestamp::new(7, Timebase::new(0, nz(3)));
+  assert_eq!(
+    degenerate
+      .saturating_add_duration(Duration::from_secs(1))
+      .pts(),
+    7
+  );
+}
+
+#[test]
 fn time_range_builders_and_setters() {
   let tb = Timebase::new(1, nz(1000));
   let r = TimeRange::new(0, 0, tb);

@@ -439,6 +439,25 @@ impl Timestamp {
     Self::new(self.pts.saturating_sub(units), self.timebase)
   }
 
+  /// Returns a new [`Timestamp`] representing this instant shifted forward
+  /// by `d`, in the same timebase. Saturates at `i64::MAX` if the addition
+  /// would overflow (pathological for real video).
+  ///
+  /// The forward twin of [`Self::saturating_sub_duration`]: use it to close a
+  /// window opened at `self`, e.g. `ts + max_gap` for the deadline a
+  /// detector will stop waiting at.
+  ///
+  /// Saturating in both steps, and only the second is visible in the result:
+  /// [`Timebase::duration_to_pts`] itself saturates when `d` is enormous for
+  /// this timebase, so a saturated answer can mean either "the duration did
+  /// not fit" or "the sum did not". Both say the same thing about the
+  /// instant — it is past the end of what an `i64` PTS can name.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_add_duration(self, d: Duration) -> Self {
+    let units = self.timebase.duration_to_pts(d);
+    Self::new(self.pts.saturating_add(units), self.timebase)
+  }
+
   /// `const fn` form of [`Ord::cmp`]. Compares two timestamps by the instant
   /// they represent, rescaling if timebases differ.
   ///
