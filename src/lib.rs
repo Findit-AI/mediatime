@@ -24,6 +24,10 @@ use core::{
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+mod parse;
+
+pub use parse::{ParseTimeRangeError, ParseTimebaseError, ParseTimestampError};
+
 /// `NonZeroI32` for 1: the default denominator, and the clamp target when a
 /// malformed denominator arrives on the wire.
 ///
@@ -339,7 +343,8 @@ impl PartialOrd for Timebase {
 ///
 /// Unlike [`Timestamp`]'s and [`TimeRange`]'s, this rendering is exact — a
 /// numerator and a denominator are the whole value — so `{:#}` renders
-/// identically; there is nothing to expand into.
+/// identically; there is nothing to expand into. [`FromStr`](core::str::FromStr)
+/// inverts it.
 ///
 /// Width and alignment flags (`{:>12}`) are ignored: honouring them means
 /// measuring the finished string, and this crate has no `alloc` to build one
@@ -588,7 +593,9 @@ impl PartialOrd for Timestamp {
 /// precision this form does not have.
 ///
 /// `{:#}` is the exact form: the stored PTS beside its timebase, as
-/// `12345 @ 1/90000`. So is the derived [`Debug`].
+/// `12345 @ 1/90000`. So is the derived [`Debug`]. Being the exact one, `{:#}`
+/// is also the form [`FromStr`](core::str::FromStr) reads back; the clock is
+/// lossy and has no inverse.
 ///
 /// Width and alignment flags (`{:>12}`) are ignored, so this will not line a
 /// log up into columns: honouring them means measuring the finished string,
@@ -826,7 +833,8 @@ impl TimeRange {
 /// `{:#}` prints the raw endpoints and names the shared timebase **once**,
 /// after both — `[1500, 3250) @ 1/1000` — because both endpoints are in one
 /// timebase by construction and repeating it would suggest they need not be.
-/// The derived [`Debug`] is exact as well.
+/// The derived [`Debug`] is exact as well, and `{:#}` is the form
+/// [`FromStr`](core::str::FromStr) reads back.
 ///
 /// Each endpoint is rendered by [`Timestamp`]'s `Display`, and inherits its
 /// truncation, its lossiness, and its indifference to width and alignment

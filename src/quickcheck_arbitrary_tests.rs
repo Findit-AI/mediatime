@@ -42,3 +42,25 @@ fn timerange_is_well_formed() {
     assert!(r.timebase().num() >= 0);
   }
 }
+
+/// The table-driven round trips in `parse::tests` pick their inputs; these
+/// let the generator pick, over the whole domain each `Arbitrary` covers.
+/// `Debug` is the structural comparison — `==` is semantic here, so it would
+/// not catch a parser that reduced or rescaled.
+#[test]
+fn every_exact_rendering_parses_back_to_the_value_that_wrote_it() {
+  let mut g = Gen::new(SIZE);
+  for _ in 0..ITERATIONS {
+    let tb = Timebase::arbitrary(&mut g);
+    let parsed: Timebase = format!("{tb:#}").parse().expect("timebase parses back");
+    assert_eq!(format!("{parsed:?}"), format!("{tb:?}"));
+
+    let ts = Timestamp::arbitrary(&mut g);
+    let parsed: Timestamp = format!("{ts:#}").parse().expect("timestamp parses back");
+    assert_eq!(format!("{parsed:?}"), format!("{ts:?}"));
+
+    let r = TimeRange::arbitrary(&mut g);
+    let parsed: TimeRange = format!("{r:#}").parse().expect("time range parses back");
+    assert_eq!(format!("{parsed:?}"), format!("{r:?}"));
+  }
+}
