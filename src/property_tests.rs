@@ -54,6 +54,21 @@ fn exact_quotient(pts: i64, from: Timebase, to: Timebase) -> (i128, i128) {
   )
 }
 
+/// A roster name in one ASCII case or the other — the two ends of what the
+/// name doors fold, from a name that is `SCREAMING_SNAKE_CASE` to begin with.
+fn fold(name: &str, upper: bool) -> String {
+  name
+    .chars()
+    .map(|c| {
+      if upper {
+        c.to_ascii_uppercase()
+      } else {
+        c.to_ascii_lowercase()
+      }
+    })
+    .collect()
+}
+
 fn hash_of(tb: &Timebase) -> u64 {
   let mut h = std::collections::hash_map::DefaultHasher::new();
   tb.hash(&mut h);
@@ -197,11 +212,12 @@ quickcheck! {
       && hash_of(&reduced) == hash_of(&tb)
   }
 
-  /// A timebase that answers to a roster name parses back from that name.
-  fn the_name_table_reads_both_ways(tb: (u32, u32)) -> bool {
+  /// A timebase that answers to a roster name reads back from that name, in
+  /// any ASCII casing.
+  fn the_name_table_reads_both_ways(tb: (u32, u32), upper: bool) -> bool {
     let tb = any_timebase(tb);
     match tb.well_known_name() {
-      Some(name) => Timebase::from_name(name) == Some(tb),
+      Some(name) => Timebase::from_name(name) == Some(tb) && Timebase::from_name(&fold(name, upper)) == Some(tb),
       None => true,
     }
   }
@@ -324,10 +340,7 @@ quickcheck! {
     let rational = any_timebase(tb);
     let rate = Rate::fps(rational.num(), rational.den());
     match rate.well_known_name() {
-      Some(name) => {
-        let folded: String = name.chars().map(|c| if upper { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() }).collect();
-        Rate::from_name(&folded) == Some(rate) && Rate::from_name(name) == Some(rate)
-      }
+      Some(name) => Rate::from_name(name) == Some(rate) && Rate::from_name(&fold(name, upper)) == Some(rate),
       None => true,
     }
   }

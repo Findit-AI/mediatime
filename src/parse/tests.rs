@@ -99,11 +99,28 @@ fn timebase_parses_a_well_known_name_on_its_other_arm() {
 
 #[test]
 fn timebase_parse_rejects_a_name_that_is_not_on_the_roster() {
-  // Case-sensitive and exact, per `Timebase::from_name`; nothing falls
-  // through to the rational arm, which has no slash to find.
-  for s in ["millis", "MILLI", "MPEG90K", "SECOND", "NTSC"] {
+  // Case folds, per `Timebase::from_name`, and nothing else does; a near
+  // miss falls through to the rational arm, which has no slash to find.
+  for s in ["MILLI", "MPEG90K", "SECOND", "NTSC", "milli_s"] {
     assert_eq!(s.parse::<Timebase>(), Err(ParseTimebaseError(())), "{s}");
   }
+}
+
+#[test]
+fn timebase_parse_folds_case_on_the_name_arm() {
+  // The door is `Timebase::from_name`, so `FromStr` inherits its folding —
+  // and so do the composite parsers, which parse their timebase half here.
+  for s in ["millis", "Millis", "  mIlLiS  "] {
+    assert_same_fields(&s.parse::<Timebase>().expect("parses"), &Timebase::MILLIS);
+  }
+  assert_same_fields(
+    &"12345 @ mpeg_90k".parse::<Timestamp>().expect("parses"),
+    &Timestamp::new(12_345, Timebase::MPEG_90K),
+  );
+  assert_same_fields(
+    &"[100, 500) @ millis".parse::<TimeRange>().expect("parses"),
+    &TimeRange::new(100, 500, Timebase::MILLIS),
+  );
 }
 
 #[test]

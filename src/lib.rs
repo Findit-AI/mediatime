@@ -227,22 +227,26 @@ impl Timebase {
     }
   }
 
-  /// Looks up a [well-known timebase](Self#the-well-known-roster) by the exact
-  /// name of its constant — `"MILLIS"`, `"MPEG_90K"`, `"NTSC_VIDEO"`.
+  /// Looks up a [well-known timebase](Self#the-well-known-roster) by the name
+  /// of its constant — `"MPEG_90K"`, `"mpeg_90k"`, `"Mpeg_90k"`.
   ///
-  /// The match is exact and case-sensitive: the names are the constants'
-  /// own `SCREAMING_SNAKE_CASE` spellings, so a name that round-trips through
-  /// [`Self::well_known_name`] is the one a reader can grep for in this file.
+  /// Name lookup is **ASCII-case-insensitive**, and case is the whole of the
+  /// folding: the name is otherwise the constant's own `SCREAMING_SNAKE_CASE`
+  /// spelling, with no alias and no trimming, so a name written in a config
+  /// file is greppable in this one. The canonical spelling is the one
+  /// [`Self::well_known_name`] writes back.
+  ///
   /// `None` for anything else — including a `num/den` rendering, which
   /// [`FromStr`](core::str::FromStr) accepts on its other arm.
   pub fn from_name(name: &str) -> Option<Self> {
     WELL_KNOWN
       .iter()
-      .find_map(|(known, timebase)| (*known == name).then_some(*timebase))
+      .find_map(|(known, timebase)| known.eq_ignore_ascii_case(name).then_some(*timebase))
   }
 
-  /// The name of the [well-known timebase](Self#the-well-known-roster) this
-  /// one *equals*, if any — the inverse of [`Self::from_name`].
+  /// The canonical name of the [well-known
+  /// timebase](Self#the-well-known-roster) this one *equals*, if any — the
+  /// inverse of [`Self::from_name`], and the spelling to write back out.
   ///
   /// Matched **by value**, as [`PartialEq`] matches: `2/2000` is
   /// [`MILLIS`](Self::MILLIS) and answers to that name, even though
@@ -1912,7 +1916,10 @@ use de::{de_den, de_num};
 /// reads it backward, so a constant listed here is reachable from both
 /// directions or from neither — there is no second table to forget. The
 /// backward direction is single-valued only because no two entries are equal;
-/// `well_known_timebases_are_pairwise_distinct` pins that.
+/// `well_known_timebases_are_pairwise_distinct` pins that. The forward
+/// direction folds ASCII case, so it is single-valued only because no two
+/// names fold together;
+/// `well_known_timebase_names_do_not_collide_under_ascii_folding` pins that.
 const WELL_KNOWN: &[(&str, Timebase)] = &[
   ("SECONDS", Timebase::SECONDS),
   ("MILLIS", Timebase::MILLIS),

@@ -61,9 +61,11 @@ impl core::error::Error for ParseTimeRangeError {}
 /// `MILLIS`, `MPEG_90K` — or `num/den`, the form [`Timebase`]'s `Display`
 /// writes in both `{}` and `{:#}`.
 ///
-/// The roster is tried first, exactly and case-sensitively, via
-/// [`Timebase::from_name`]; nothing in it contains a slash, so the two arms
-/// cannot collide. It is an *input* convenience for hand-written configuration
+/// The roster is tried first, via [`Timebase::from_name`], so the name arm
+/// folds ASCII case as that door does — `millis` parses — and nothing else:
+/// no alias, no separator guessing. Nothing in the roster contains a slash, so
+/// the two arms cannot collide. It is an *input* convenience for
+/// hand-written configuration
 /// and command lines: `Display` still writes `num/den` for every value, so the
 /// `Display` → `FromStr` round trip is unchanged and lossless. The reverse is
 /// deliberately not injective — `"MILLIS"` and `"1/1000"` parse to the same

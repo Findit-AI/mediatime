@@ -705,13 +705,37 @@ fn from_name_and_well_known_name_are_one_table_read_both_ways() {
 }
 
 #[test]
-fn from_name_matches_exactly_and_nothing_else() {
-  // `SCREAMING_SNAKE_CASE`, case-sensitively: the constant's own spelling and
-  // no alias, so the name in a config file is greppable in this crate.
-  for s in ["millis", "Millis", " MILLIS", "MILLIS ", "MS", "1/1000", ""] {
+fn from_name_folds_case_and_nothing_else() {
+  // Any ASCII casing of the constant's own spelling reads.
+  for s in ["MILLIS", "millis", "Millis", "mIlLiS"] {
+    assert_eq!(Timebase::from_name(s), Some(Timebase::MILLIS), "{s:?}");
+  }
+
+  // Case is the whole of the folding: no alias, no trimming, no rational
+  // parsing on this door.
+  for s in [" MILLIS", "MILLIS ", "MS", "MILLI", "1/1000", ""] {
     assert_eq!(Timebase::from_name(s), None, "{s:?}");
   }
-  assert_eq!(Timebase::from_name("MILLIS"), Some(Timebase::MILLIS));
+
+  // And the canonical spelling is what comes back out.
+  assert_eq!(
+    Timebase::from_name("millis").and_then(|tb| tb.well_known_name()),
+    Some("MILLIS")
+  );
+}
+
+#[test]
+fn well_known_timebase_names_do_not_collide_under_ascii_folding() {
+  // `from_name` folds ASCII case, so two names differing only in case would
+  // make the forward lookup depend on table order.
+  for (i, (name, _)) in WELL_KNOWN.iter().enumerate() {
+    for (other_name, _) in &WELL_KNOWN[i + 1..] {
+      assert!(
+        !name.eq_ignore_ascii_case(other_name),
+        "{name} and {other_name} fold together"
+      );
+    }
+  }
 }
 
 #[test]
