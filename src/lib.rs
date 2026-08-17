@@ -26,7 +26,10 @@ use serde::{Deserialize, Serialize};
 
 mod parse;
 
-pub use parse::{ParseTimeRangeError, ParseTimebaseError, ParseTimestampError};
+pub use parse::{
+  ParseRateError, ParseSignedDurationError, ParseTimeRangeError, ParseTimebaseError,
+  ParseTimestampError,
+};
 
 /// Nanoseconds in a second — the factor that turns a [`Duration`] into ticks
 /// of a [`Timebase`] and back.
@@ -1337,6 +1340,35 @@ impl SignedDuration {
   }
 }
 
+/// Writes the count beside its timebase as `-1500 @ 1/1000` — the exact form,
+/// and the only one this type has.
+///
+/// It is [`Timestamp`]'s `{:#}` notation over a count instead of an instant,
+/// so `{:#}` renders identically here: a count and a timebase are the whole
+/// value, and there is nothing to expand into. The sign leads the whole
+/// rendering because the sign lives on the count; a timebase never carries
+/// one.
+///
+/// There is deliberately **no clock form**. `H:MM:SS.mmm` truncates to the
+/// millisecond and names no timebase, which is a loss an instant in a log line
+/// can afford and an inverse cannot: [`Timestamp`]'s clock has no `FromStr`
+/// for exactly that reason, and a span rendered that way would additionally
+/// lose the count it *is*. [`FromStr`](core::str::FromStr) inverts this
+/// rendering exactly.
+///
+/// One consequence: this rendering and [`Timestamp`]'s `{:#}` are the same
+/// shape, so `1500 @ 1/1000` alone does not say whether it is an instant or a
+/// span. A log line that prints one should say which it is printing.
+///
+/// Width and alignment flags (`{:>12}`) are ignored, as they are for every
+/// type here: honouring them means measuring the finished string, and this
+/// crate has no `alloc` to build one in.
+impl fmt::Display for SignedDuration {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{} @ {}", self.ticks, self.timebase)
+  }
+}
+
 /// A half-open time range `[start, end)` in a given [`Timebase`].
 ///
 /// Represents the extent of a detected event — for example, a fade-out →
@@ -1880,6 +1912,27 @@ impl Rate {
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn saturating_frames_to_duration(&self, frames: i64) -> Duration {
     self.to_timebase().saturating_pts_to_duration(frames)
+  }
+}
+
+/// Writes the rate as `num/den` — `30000/1001`, `48000/1`, `24/1`.
+///
+/// [`Timebase`]'s rendering over the other reading of a rational, and exact
+/// for the same reason: a numerator and a denominator are the whole value, so
+/// `{:#}` renders identically. The stored form is printed rather than the
+/// reduced one, so a stream that declared `60000/2002` still reads as
+/// `60000/2002`.
+///
+/// A [roster name](Rate#the-well-known-roster) is never written. The name is
+/// an *input* convenience — [`FromStr`](core::str::FromStr) reads one, on top
+/// of inverting this rendering — and [`Rate::well_known_name`] is where a name
+/// goes to be recovered, so nothing here has to guess whether `24/1` was meant
+/// as `FPS_24`.
+///
+/// Width and alignment flags (`{:>12}`) are ignored, as [`Timebase`]'s are.
+impl fmt::Display for Rate {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Display::fmt(&self.0, f)
   }
 }
 

@@ -1,16 +1,35 @@
-//! [`FromStr`] for the three time types, and the errors they reject with.
+//! [`FromStr`] for the five time types, and the errors they reject with.
 //!
 //! Each impl is the inverse of the type's **exact** rendering — the one
-//! `{:#}` writes, which is `{}` as well for [`Timebase`]. That is the only
-//! rendering an inverse can exist for: [`Timestamp`]'s and [`TimeRange`]'s
-//! default `{}` form is a clock truncated to milliseconds that never names a
-//! timebase, so two different instants can share one rendering and no parser
-//! can tell which was meant. Accepting it would mint a value that does not
-//! compare equal to the one printed. See each impl for its grammar.
+//! `{:#}` writes, which is `{}` as well for [`Timebase`], [`Rate`] and
+//! [`SignedDuration`], whose renderings have nothing to expand into. That is
+//! the only rendering an inverse can exist for: [`Timestamp`]'s and
+//! [`TimeRange`]'s default `{}` form is a clock truncated to milliseconds that
+//! never names a timebase, so two different instants can share one rendering
+//! and no parser can tell which was meant. Accepting it would mint a value
+//! that does not compare equal to the one printed. See each impl for its
+//! grammar.
+//!
+//! Each type rejects with **its own** error, named for the vocabulary it
+//! wanted: a caller matching on a failed `Rate` parse should not have to read
+//! a message about timebases, and the two rosters are disjoint on purpose.
 
 use core::{fmt, num::NonZeroI32, str::FromStr};
 
-use crate::{TimeRange, Timebase, Timestamp};
+use crate::{Rate, SignedDuration, TimeRange, Timebase, Timestamp};
+
+/// The `num/den` half of the two rational grammars, scanned once so
+/// [`Timebase`] and [`Rate`] cannot drift apart in what they accept.
+///
+/// Only the shape is decided here. The caller applies its own constructor as
+/// the validator, because the invariants land in different types and are
+/// reported under different errors.
+fn rational(s: &str) -> Option<(i32, NonZeroI32)> {
+  let (num, den) = s.split_once('/')?;
+  let num = num.trim().parse::<i32>().ok()?;
+  let den = den.trim().parse::<i32>().ok()?;
+  Some((num, NonZeroI32::new(den)?))
+}
 
 /// Returned when a string is not a [`Timebase`] rendering.
 ///
@@ -41,6 +60,37 @@ impl fmt::Display for ParseTimestampError {
 }
 
 impl core::error::Error for ParseTimestampError {}
+
+/// Returned when a string is not a [`SignedDuration`] rendering.
+///
+/// Distinct from [`ParseTimestampError`] although the two grammars are the
+/// same shape: a count and an instant are different vocabularies, and the
+/// message says which one was expected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseSignedDurationError(());
+
+impl fmt::Display for ParseSignedDurationError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str("expected a signed duration `ticks @ num/den`")
+  }
+}
+
+impl core::error::Error for ParseSignedDurationError {}
+
+/// Returned when a string is not a [`Rate`] rendering.
+///
+/// Carries no detail, as [`ParseTimebaseError`] does not: the grammar is two
+/// integers and a slash, or a name from a fixed roster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseRateError(());
+
+impl fmt::Display for ParseRateError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str("expected a rate `num/den` with num >= 0 and den > 0, or a well-known rate name")
+  }
+}
+
+impl core::error::Error for ParseRateError {}
 
 /// Returned when a string is not a [`TimeRange`] rendering.
 ///
@@ -77,8 +127,9 @@ impl core::error::Error for ParseTimeRangeError {}
 /// `2/4` parses to a numerator of 2 over a denominator of 4, which is what was
 /// written, and what `Display` will write back.
 ///
-/// [`Timestamp`] and [`TimeRange`] parse their timebase half through this
-/// impl, so `12345 @ MPEG_90K` parses too.
+/// [`Timestamp`], [`TimeRange`] and [`SignedDuration`] parse their timebase
+/// half through this impl, so `12345 @ MPEG_90K` parses too. [`Rate`]'s roster
+/// is **not** read here, nor this one there — see that impl for why.
 ///
 /// # Errors
 ///
@@ -90,17 +141,53 @@ impl FromStr for Timebase {
   type Err = ParseTimebaseError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    let err = ParseTimebaseError(());
     let s = s.trim();
     if let Some(known) = Self::from_name(s) {
       return Ok(known);
     }
-    let (num, den) = s.split_once('/').ok_or(err)?;
-    let num = num.trim().parse::<i32>().map_err(|_| err)?;
-    let den = den.trim().parse::<i32>().map_err(|_| err)?;
-    NonZeroI32::new(den)
-      .and_then(|den| Self::try_new(num, den))
-      .ok_or(err)
+    rational(s)
+      .and_then(|(num, den)| Self::try_new(num, den))
+      .ok_or(ParseTimebaseError(()))
+  }
+}
+
+/// Parses either a [well-known rate name](Rate#the-well-known-roster) —
+/// `FPS_29_97`, `FPS_24` — or `num/den`, the form [`Rate`]'s `Display` writes
+/// in both `{}` and `{:#}`.
+///
+/// The two arms and their order are [`Timebase`]'s, over the *rate* roster:
+/// the name arm is tried first, through [`Rate::from_name`], so it folds
+/// ASCII case — `fps_29_97` parses — and nothing else. No rate name contains a
+/// slash, so the arms cannot collide.
+///
+/// The rosters, though, are **disjoint on purpose**: `"MILLIS"` is not a rate
+/// and `"FPS_24"` is not a timebase, and each door refuses the other's names.
+/// A rate and a timebase are reciprocal readings of one rational, so a door
+/// that read both would silently answer `1/24` where `24/1` was written.
+/// [`Rate::to_timebase`] is the conversion, and it is asked for.
+///
+/// Whitespace is trimmed as it is on the timebase door, the value is not
+/// reduced, and the name arm is an input convenience only: `Display` writes
+/// `num/den` for every value, so the `Display` → `FromStr` round trip is
+/// lossless and `"FPS_24"` and `"24/1"` land on the same rate.
+///
+/// # Errors
+///
+/// Returns [`ParseRateError`] if the input is neither a rate name nor a
+/// `num/den` pair: the slash is missing, either half is not an `i32`, or the
+/// pair is one [`Rate::try_fps`] refuses — a negative numerator, or a
+/// denominator that is zero or negative.
+impl FromStr for Rate {
+  type Err = ParseRateError;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    let s = s.trim();
+    if let Some(known) = Self::from_name(s) {
+      return Ok(known);
+    }
+    rational(s)
+      .and_then(|(num, den)| Self::try_fps(num, den))
+      .ok_or(ParseRateError(()))
   }
 }
 
@@ -125,6 +212,35 @@ impl FromStr for Timestamp {
     let pts = pts.trim().parse::<i64>().map_err(|_| err)?;
     let timebase = timebase.trim().parse::<Timebase>().map_err(|_| err)?;
     Ok(Self::new(pts, timebase))
+  }
+}
+
+/// Parses `ticks @ num/den` — the form [`SignedDuration`]'s `Display` writes,
+/// under both `{}` and `{:#}`.
+///
+/// [`Timestamp`]'s grammar over a count: whitespace around each part is
+/// trimmed, the timebase half goes through [`Timebase`]'s own impl, so
+/// `-1500 @ MILLIS` parses, and the leading `-` is the count's, a timebase
+/// having no sign to write.
+///
+/// The rendering is the same shape as [`Timestamp`]'s `{:#}`, so a string
+/// alone does not say which type was printed; the type asked for decides, and
+/// `"1500 @ 1/1000".parse::<SignedDuration>()` is a span however the string
+/// was produced.
+///
+/// # Errors
+///
+/// Returns [`ParseSignedDurationError`] if the `@` is missing, if the count is
+/// not an `i64`, or if the timebase half is not one [`Timebase`] accepts.
+impl FromStr for SignedDuration {
+  type Err = ParseSignedDurationError;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    let err = ParseSignedDurationError(());
+    let (ticks, timebase) = s.split_once('@').ok_or(err)?;
+    let ticks = ticks.trim().parse::<i64>().map_err(|_| err)?;
+    let timebase = timebase.trim().parse::<Timebase>().map_err(|_| err)?;
+    Ok(Self::new(ticks, timebase))
   }
 }
 

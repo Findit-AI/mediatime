@@ -51,8 +51,8 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 - **Signed spans.** `SignedDuration` is what the difference of two instants actually is — `later.signed_duration_since(&earlier)` — and `Duration` cannot hold it, being unsigned. It shifts an instant back again (`ts.checked_add_signed(span)`, `saturating_sub_signed`), adds and subtracts across timebases, and answers in the left operand's. Sorting by length is asked for by name — `spans.sort_by(SignedDuration::cmp_semantic)` — because `2 @ 1/1` and `1000 @ 1/1000` are one second apart in length and the counts say the opposite.
 - **Named timebases.** `Timebase::MILLIS`, `MPEG_90K`, `HZ_48K`, `NTSC_VIDEO`, `FILM_24` and the rest of the roster, each with the container or codec convention that declares it. `Timebase::from_name("MPEG_90K")` reads a name — in any ASCII case, so `"mpeg_90k"` reads too — `well_known_name()` writes the canonical spelling back, and `FromStr` accepts either a name or `num/den`.
 - **`TimeRange` interpolation.** Linear midpoint (`interpolate(t)`) for placing an event somewhere between fade-out and fade-in frames, with `t ∈ [0, 1]` clamped.
-- **`Display` for logs.** `{}` is readable — `1/1000`, `0:00:00.137`, `[0:00:01.500, 0:00:03.250)`; `{:#}` is exact — `12345 @ 1/90000`, `[1500, 3250) @ 1/1000`.
-- **`FromStr` for the exact form.** `"1/1000"`, `"12345 @ 1/90000"` and `"[1500, 3250) @ 1/1000"` parse back to the value that wrote them. The readable clock has no inverse — it is truncated to milliseconds and names no timebase — so it is rejected rather than guessed at.
+- **`Display` for logs.** `{}` is readable where there is a readable form — `0:00:00.137`, `[0:00:01.500, 0:00:03.250)` — and `{:#}` is exact: `12345 @ 1/90000`, `[1500, 3250) @ 1/1000`. A rational, a rate and a span have nothing to expand into, so their one rendering is exact in both: `1/1000`, `30000/1001`, `-1500 @ 1/1000`.
+- **`FromStr` for the exact form.** All five types read back the value that wrote them, each rejecting with its own error. The readable clock has no inverse — it is truncated to milliseconds and names no timebase — so it is rejected rather than guessed at. Roster names read on the input side only, and only on their own door: `"MILLIS"` is a timebase, `"FPS_24"` is a rate, and neither parses as the other, a rate being the reciprocal reading of a rational rather than a second spelling of it.
 - **`no_std` + `no_alloc` library.** The library builds without `std` and `alloc`; tests use `std`.
 - **`const fn` throughout.** Build `Timebase` / `Timestamp` / `TimeRange` in `const` context.
 
@@ -107,11 +107,19 @@ assert_eq!(format!("{}",  Timestamp::new(12_345, mpegts)), "0:00:00.137");
 assert_eq!(format!("{:#}", Timestamp::new(12_345, mpegts)), "12345 @ 1/90000");
 assert_eq!(format!("{r}"),  "[0:00:00.100, 0:00:00.500)");
 assert_eq!(format!("{r:#}"), "[100, 500) @ 1/1000");
+assert_eq!(format!("{ntsc}"), "30000/1001");
+assert_eq!(format!("{span}"), "45000 @ 1/90000");
 
 // `FromStr` inverts the exact form, and also reads a roster name.
 assert_eq!("1/1000".parse::<Timebase>(), Ok(ms));
 assert_eq!("MILLIS".parse::<Timebase>(), Ok(ms));
 assert_eq!("[100, 500) @ 1/1000".parse::<TimeRange>(), Ok(r));
+assert_eq!("FPS_29_97".parse::<Rate>(), Ok(ntsc));
+assert_eq!("45000 @ 1/90000".parse(), Ok(span));
+
+// Each roster stays on its own door: a rate is not a timebase.
+assert!("MILLIS".parse::<Rate>().is_err());
+assert!("FPS_29_97".parse::<Timebase>().is_err());
 ```
 
 ## Installation

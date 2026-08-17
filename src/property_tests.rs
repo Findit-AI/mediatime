@@ -396,6 +396,49 @@ quickcheck! {
     }
   }
 
+  /// A span parses back from its own rendering — *structurally*, nothing
+  /// reduced or re-counted on the way — over the whole `i64` and every
+  /// timebase the constructor admits.
+  fn a_span_parses_back_from_its_rendering(ticks: i64, tb: (u32, u32)) -> bool {
+    let span = SignedDuration::new(ticks, any_timebase(tb));
+    format!("{span}").parse::<SignedDuration>().map(|parsed| format!("{parsed:?}"))
+      == Ok(format!("{span:?}"))
+  }
+
+  /// A rate parses back from its own rendering, on the same law.
+  fn a_rate_parses_back_from_its_rendering(tb: (u32, u32)) -> bool {
+    let rational = any_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    format!("{rate}").parse::<Rate>().map(|parsed| format!("{parsed:?}"))
+      == Ok(format!("{rate:?}"))
+  }
+
+  /// Rendering a *parsed* rate settles after one pass, whichever arm the
+  /// input took: a roster name is read on the way in and never written on the
+  /// way out, so the second pass has nothing left to change. The name is
+  /// drawn in either ASCII case, the door folding it.
+  ///
+  /// The name arm is deliberately not injective — `well_known_name` matches
+  /// by value, so `60000/2002` answers to `FPS_29_97` and comes back as
+  /// `30000/1001`, equal to what it started as but not written the same way.
+  /// That is why the conclusion is `==` on the rate and equality on the
+  /// *second* rendering rather than the first.
+  fn rendering_a_parsed_rate_settles_after_one_pass(tb: (u32, u32), upper: bool) -> bool {
+    let rational = any_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    let written = match rate.well_known_name() {
+      Some(name) => fold(name, upper),
+      None => format!("{rate}"),
+    };
+    match written.parse::<Rate>() {
+      Ok(once) => match format!("{once}").parse::<Rate>() {
+        Ok(twice) => once == rate && format!("{once}") == format!("{twice}"),
+        Err(_) => false,
+      },
+      Err(_) => false,
+    }
+  }
+
   /// Shifting an instant by a span and asking what span separates the two
   /// returns the span — the law that makes the pair inverses.
   fn a_shift_and_the_span_it_moved_by_are_inverses(pts: i64, ticks: i64, tb: (u32, u32)) -> bool {
