@@ -477,10 +477,9 @@ impl Timebase {
   /// - a `self.num() == 0` degenerate timebase, whose every tick lands on the
   ///   same instant, so no count of them spans a non-zero duration.
   ///
-  /// The second is why this rung exists: [`Self::saturating_duration_to_pts`]
-  /// answers `0` there, which is right only for [`Duration::ZERO`], and a
-  /// caller building a `checked_` operation on top of a conversion that had
-  /// already given up would report an exact answer it does not have.
+  /// The second is where this rung earns its keep: it is the only spelling of
+  /// the conversion that answers at all on a degenerate timebase, its twin
+  /// [`Self::saturating_duration_to_pts`] panicking there.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn checked_duration_to_pts(&self, d: Duration) -> Option<i64> {
     if self.num == 0 {
@@ -501,16 +500,17 @@ impl Timebase {
   /// arithmetic, same rounding, and a count too large for an `i64` comes back
   /// as `i64::MAX`.
   ///
-  /// A degenerate `self.num() == 0` timebase answers `0` — not a saturation
-  /// but the identity, which is what makes
-  /// [`Timestamp::saturating_add_duration`] a no-op there rather than a panic.
-  /// It is the honest answer only for [`Duration::ZERO`]; use
-  /// [`Self::checked_duration_to_pts`] when the difference matters.
+  /// # Panics
+  ///
+  /// Panics if `self.num() == 0`, the divide-by-zero a degenerate timebase
+  /// would be — the same posture [`Self::saturating_rescale`] takes toward the
+  /// same degeneracy, and for the reason [`i64::saturating_div`] panics on a
+  /// zero divisor: saturation answers *overflow*, and a timebase whose every
+  /// tick lands on one instant leaves no count to clamp. Use
+  /// [`Self::checked_duration_to_pts`] where the timebase may be degenerate.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn saturating_duration_to_pts(&self, d: Duration) -> i64 {
-    if self.num == 0 {
-      return 0;
-    }
+    assert!(self.num != 0, "target timebase numerator must be non-zero");
     let ticks = self.duration_ticks(d);
     if ticks > i64::MAX as u128 {
       i64::MAX
@@ -745,6 +745,12 @@ impl Timestamp {
   /// Useful for "virtual past" seeding: e.g., initializing a warmup-filter
   /// state to `ts - min_duration` so the first detected cut can fire
   /// immediately.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `self.timebase().num() == 0`, as
+  /// [`Timebase::saturating_duration_to_pts`] does: a degenerate timebase
+  /// spans no time per tick, so no tick count stands for `d`.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn saturating_sub_duration(self, d: Duration) -> Self {
     let units = self.timebase.saturating_duration_to_pts(d);
@@ -764,6 +770,12 @@ impl Timestamp {
   /// enormous for this timebase, so a saturated answer can mean either "the
   /// duration did not fit" or "the sum did not". Both say the same thing about
   /// the instant — it is past the end of what an `i64` PTS can name.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `self.timebase().num() == 0`, as
+  /// [`Timebase::saturating_duration_to_pts`] does: a degenerate timebase
+  /// spans no time per tick, so no tick count stands for `d`.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn saturating_add_duration(self, d: Duration) -> Self {
     let units = self.timebase.saturating_duration_to_pts(d);

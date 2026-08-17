@@ -579,21 +579,35 @@ fn duration_to_pts_rounds_to_nearest() {
 }
 
 #[test]
-fn duration_to_pts_parts_ways_with_its_twin_on_a_degenerate_timebase() {
+fn duration_to_pts_refuses_a_degenerate_timebase() {
   // Every tick of a `0/den` timebase is instant zero, so no count of them
-  // spans a second. The checked rung says so; the saturating one answers 0,
-  // which is the identity `Timestamp::saturating_add_duration` needs and is
-  // the *right* answer only for a zero duration.
+  // spans a second — nor a zero duration, the refusal being about the
+  // timebase and not about `d`. `checked_rescale` refuses its degenerate
+  // target the same way, at `pts = 0` included.
   let degenerate = Timebase::new(0, nz(3));
   assert_eq!(
     degenerate.checked_duration_to_pts(Duration::from_secs(1)),
     None
   );
   assert_eq!(degenerate.checked_duration_to_pts(Duration::ZERO), None);
-  assert_eq!(
-    degenerate.saturating_duration_to_pts(Duration::from_secs(1)),
-    0
-  );
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn saturating_duration_to_pts_panics_on_a_degenerate_timebase() {
+  // The other rung of the same ladder panics on the same degeneracy, in the
+  // same words: saturation is a posture toward overflow, and a degenerate
+  // timebase leaves nothing to clamp. It answered `0` before, which was the
+  // honest count only for `Duration::ZERO`.
+  Timebase::new(0, nz(3)).saturating_duration_to_pts(Duration::from_secs(1));
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn saturating_duration_to_pts_panics_on_a_degenerate_timebase_for_zero_too() {
+  // Not even the duration whose old answer was right: the refusal is about
+  // the timebase.
+  Timebase::new(0, nz(3)).saturating_duration_to_pts(Duration::ZERO);
 }
 
 #[test]
@@ -728,16 +742,23 @@ fn saturating_add_duration_is_the_forward_twin() {
     i64::MAX
   );
 
-  // Zero is the identity; a degenerate timebase converts every duration to
-  // zero units, so it is the identity there too.
+  // Zero is the identity.
   assert_eq!(ts.saturating_add_duration(Duration::ZERO), ts);
-  let degenerate = Timestamp::new(7, Timebase::new(0, nz(3)));
-  assert_eq!(
-    degenerate
-      .saturating_add_duration(Duration::from_secs(1))
-      .pts(),
-    7
-  );
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn saturating_add_duration_panics_on_a_degenerate_timebase() {
+  // It was a no-op here while `saturating_duration_to_pts` answered `0`;
+  // that conversion now refuses the degenerate timebase, and the shift
+  // built on it inherits the refusal rather than pretending to have moved.
+  Timestamp::new(7, Timebase::new(0, nz(3))).saturating_add_duration(Duration::from_secs(1));
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn saturating_sub_duration_panics_on_a_degenerate_timebase() {
+  Timestamp::new(7, Timebase::new(0, nz(3))).saturating_sub_duration(Duration::from_secs(1));
 }
 
 #[test]

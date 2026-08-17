@@ -155,6 +155,8 @@ quickcheck! {
     }
   }
 
+  /// The `None` arm here must stay an arm and not become a call: `None`
+  /// includes the degenerate timebase, where the saturating rung panics.
   fn the_duration_to_pts_rungs_agree(secs: u32, nanos: u32, tb: (u32, u32)) -> bool {
     let d = Duration::new(secs as u64, nanos % 1_000_000_000);
     let tb = any_timebase(tb);
