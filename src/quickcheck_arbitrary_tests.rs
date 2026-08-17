@@ -26,6 +26,18 @@ fn timestamp_pts_is_non_negative() {
 }
 
 #[test]
+fn rate_is_a_well_formed_rational() {
+  let mut g = Gen::new(SIZE);
+  for _ in 0..ITERATIONS {
+    let rate = Rate::arbitrary(&mut g);
+    assert!(rate.den().get() > 0, "den was {}", rate.den());
+    assert!(rate.num() >= 0, "num was {}", rate.num());
+    // The reciprocal exists for exactly the non-degenerate draws.
+    assert_eq!(rate.checked_to_timebase().is_some(), rate.num() != 0);
+  }
+}
+
+#[test]
 fn signed_duration_spans_both_directions() {
   let mut g = Gen::new(SIZE);
   let mut backwards = false;

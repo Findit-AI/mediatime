@@ -144,7 +144,10 @@ fn checked_recip_swaps_the_halves() {
   assert_eq!(fps.num(), 24);
   assert_eq!(fps.den().get(), 1);
   // The reciprocal read as a frame rate is the rate the constant is named for.
-  assert_eq!(fps.frames_to_duration(24), Duration::from_secs(1));
+  assert_eq!(
+    Rate::fps(fps.num(), fps.den()).checked_frames_to_duration(24),
+    Some(Duration::from_secs(1))
+  );
 
   // Round trip, structurally: nothing is reduced or normalized on the way.
   let ntsc = Timebase::new(1_001, nz(30_000));
@@ -373,22 +376,221 @@ fn duration_since_saturates_to_duration_max_on_overflow() {
 
 #[test]
 fn frames_to_duration_integer_fps() {
-  let fps30 = Timebase::new(30, nz(1));
-  assert_eq!(fps30.frames_to_duration(15), Duration::from_millis(500));
-  assert_eq!(fps30.frames_to_duration(30), Duration::from_secs(1));
-  assert_eq!(fps30.frames_to_duration(0), Duration::ZERO);
+  let fps30 = Rate::hz(30);
+  assert_eq!(
+    fps30.checked_frames_to_duration(15),
+    Some(Duration::from_millis(500))
+  );
+  assert_eq!(
+    fps30.checked_frames_to_duration(30),
+    Some(Duration::from_secs(1))
+  );
+  assert_eq!(fps30.checked_frames_to_duration(0), Some(Duration::ZERO));
+  assert_eq!(
+    fps30.saturating_frames_to_duration(15),
+    Duration::from_millis(500)
+  );
 }
 
 #[test]
 fn frames_to_duration_ntsc() {
   // 30000 frames @ 30000/1001 fps = exactly 1001 seconds.
-  let ntsc = Timebase::new(30_000, nz(1001));
-  assert_eq!(ntsc.frames_to_duration(30_000), Duration::from_secs(1001));
+  let ntsc = Rate::fps(30_000, nz(1001));
+  assert_eq!(
+    ntsc.checked_frames_to_duration(30_000),
+    Some(Duration::from_secs(1001))
+  );
   // 15 frames at NTSC ≈ 500.5 ms.
   assert_eq!(
-    ntsc.frames_to_duration(15),
-    Duration::from_nanos(500_500_000),
+    ntsc.checked_frames_to_duration(15),
+    Some(Duration::from_nanos(500_500_000))
   );
+}
+
+#[test]
+fn frames_to_duration_refuses_or_clamps_what_no_duration_holds() {
+  let fps30 = Rate::hz(30);
+  // A negative frame count has no `Duration`; the saturating rung clamps to
+  // the floor of the type, as the tick conversion it delegates to does.
+  assert_eq!(fps30.checked_frames_to_duration(-1), None);
+  assert_eq!(fps30.saturating_frames_to_duration(-1), Duration::ZERO);
+
+  // Past `Duration::MAX`: one event per `i32::MAX` seconds, `i64::MAX` of
+  // them.
+  let glacial = Rate::fps(1, nz(i32::MAX));
+  assert_eq!(glacial.checked_frames_to_duration(i64::MAX), None);
+  assert_eq!(
+    glacial.saturating_frames_to_duration(i64::MAX),
+    Duration::MAX
+  );
+
+  // Rounding is the crate's: 1 frame at 3 fps is 333333333.33… ns.
+  assert_eq!(
+    Rate::hz(3).checked_frames_to_duration(1),
+    Some(Duration::from_nanos(333_333_333))
+  );
+  assert_eq!(
+    Rate::hz(3).checked_frames_to_duration(2),
+    Some(Duration::from_nanos(666_666_667))
+  );
+}
+
+#[test]
+fn frames_to_duration_and_the_degenerate_rate() {
+  // No events per second: no count of them takes any time, not even none of
+  // them. The checked rung says so.
+  let never = Rate::hz(0);
+  assert_eq!(never.checked_frames_to_duration(1), None);
+  assert_eq!(never.checked_frames_to_duration(0), None);
+  assert_eq!(never.checked_to_timebase(), None);
+}
+
+#[test]
+#[should_panic(expected = "rate numerator must be non-zero")]
+fn saturating_frames_to_duration_panics_on_a_degenerate_rate() {
+  Rate::hz(0).saturating_frames_to_duration(1);
+}
+
+#[test]
+#[should_panic(expected = "rate numerator must be non-zero")]
+fn to_timebase_panics_on_a_degenerate_rate() {
+  Rate::hz(0).to_timebase();
+}
+
+#[test]
+#[should_panic(expected = "timebase numerator must be non-zero")]
+fn from_timebase_panics_on_a_degenerate_timebase() {
+  Rate::from_timebase(Timebase::new(0, nz(3)));
+}
+
+#[test]
+fn rate_constructors_route_through_the_timebase_gate() {
+  assert_eq!(Rate::hz(30).num(), 30);
+  assert_eq!(Rate::hz(30).den().get(), 1);
+  assert_eq!(Rate::fps(30_000, nz(1001)), Rate::FPS_29_97);
+  assert_eq!(Rate::try_hz(30), Some(Rate::hz(30)));
+  assert_eq!(Rate::try_fps(30_000, nz(1001)), Some(Rate::FPS_29_97));
+
+  // The degenerate rate is legal to build, as the degenerate timebase is.
+  assert_eq!(Rate::try_hz(0), Some(Rate::hz(0)));
+
+  // And the constructor's refusals are the timebase's.
+  assert_eq!(Rate::try_hz(-1), None);
+  assert_eq!(Rate::try_fps(-1, nz(1001)), None);
+  assert_eq!(Rate::try_fps(30, nz(-1)), None);
+}
+
+#[test]
+#[should_panic(expected = "timebase numerator must not be negative")]
+fn rate_hz_panics_on_a_negative_count() {
+  Rate::hz(-1);
+}
+
+#[test]
+fn a_rate_is_a_timebase_read_backwards() {
+  // The roster entries are reciprocals of each other, name for name.
+  assert_eq!(Rate::FPS_23_976.to_timebase(), Timebase::NTSC_FILM);
+  assert_eq!(Rate::FPS_29_97.to_timebase(), Timebase::NTSC_VIDEO);
+  assert_eq!(Rate::FPS_24.to_timebase(), Timebase::FILM_24);
+  assert_eq!(Rate::FPS_25.to_timebase(), Timebase::PAL_25);
+  assert_eq!(Rate::from_timebase(Timebase::FILM_24), Rate::FPS_24);
+  assert_eq!(Rate::from_timebase(Timebase::NTSC_VIDEO), Rate::FPS_29_97);
+
+  // Nothing is reduced or normalized on the way there and back.
+  let declared = Rate::fps(60_000, nz(2002));
+  let there_and_back = Rate::from_timebase(declared.to_timebase());
+  assert_eq!(format!("{there_and_back:?}"), format!("{declared:?}"));
+
+  // An audio sample rate is the same reading, and `HZ_48K` is its reciprocal.
+  assert_eq!(Rate::hz(48_000).to_timebase(), Timebase::HZ_48K);
+}
+
+#[test]
+fn rate_equality_and_order_are_the_rationals() {
+  // Value-based, as `Timebase`'s are: two spellings of 29.97 are one rate.
+  assert_eq!(Rate::fps(60_000, nz(2002)), Rate::FPS_29_97);
+  assert_eq!(
+    hash_of(&Rate::fps(60_000, nz(2002))),
+    hash_of(&Rate::FPS_29_97)
+  );
+  // A greater rational is a faster rate.
+  assert!(Rate::FPS_23_976 < Rate::FPS_24);
+  assert!(Rate::FPS_29_97 < Rate::FPS_30);
+  assert!(Rate::FPS_59_94 < Rate::FPS_60);
+  assert!(Rate::hz(0) < Rate::FPS_23_976);
+  // The identity rational, as `Timebase::default` is.
+  assert_eq!(Rate::default(), Rate::hz(1));
+}
+
+#[test]
+fn well_known_rates_read_both_ways() {
+  // The table is the single name source, so every entry answers in both
+  // directions or in neither.
+  for (name, rate) in WELL_KNOWN_RATES {
+    assert_eq!(Rate::from_name(name), Some(*rate), "{name}");
+    assert_eq!(rate.well_known_name(), Some(*name), "{name}");
+  }
+  // A count, so adding a constant without listing it here is noticed.
+  assert_eq!(WELL_KNOWN_RATES.len(), 8);
+}
+
+#[test]
+fn well_known_rates_are_pairwise_distinct() {
+  // What makes `well_known_name` single-valued.
+  for (i, (name, rate)) in WELL_KNOWN_RATES.iter().enumerate() {
+    for (other_name, other) in &WELL_KNOWN_RATES[i + 1..] {
+      assert_ne!(rate, other, "{name} and {other_name} are the same rational");
+    }
+  }
+}
+
+#[test]
+fn well_known_rate_names_do_not_collide_under_ascii_folding() {
+  // `from_name` folds ASCII case, so two names differing only in case would
+  // make the forward lookup depend on table order.
+  for (i, (name, _)) in WELL_KNOWN_RATES.iter().enumerate() {
+    for (other_name, _) in &WELL_KNOWN_RATES[i + 1..] {
+      assert!(
+        !name.eq_ignore_ascii_case(other_name),
+        "{name} and {other_name} fold together"
+      );
+    }
+  }
+}
+
+#[test]
+fn rate_from_name_folds_case_and_nothing_else() {
+  // Any casing of the constant's name reads.
+  assert_eq!(Rate::from_name("FPS_29_97"), Some(Rate::FPS_29_97));
+  assert_eq!(Rate::from_name("fps_29_97"), Some(Rate::FPS_29_97));
+  assert_eq!(Rate::from_name("Fps_29_97"), Some(Rate::FPS_29_97));
+
+  // Case is the whole of the folding: no trimming, no separator guessing, no
+  // rational parsing.
+  assert_eq!(Rate::from_name(" FPS_24"), None);
+  assert_eq!(Rate::from_name("FPS 24"), None);
+  assert_eq!(Rate::from_name("FPS-24"), None);
+  assert_eq!(Rate::from_name("24"), None);
+  assert_eq!(Rate::from_name("24/1"), None);
+  assert_eq!(Rate::from_name(""), None);
+
+  // And the canonical spelling is what comes back out.
+  assert_eq!(
+    Rate::from_name("fps_24").and_then(|r| r.well_known_name()),
+    Some("FPS_24")
+  );
+}
+
+#[test]
+fn rate_well_known_name_matches_by_value() {
+  // As `Timebase::well_known_name` does: a stream that declared `60000/2002`
+  // is counting 29.97 and answers to the name.
+  assert_eq!(
+    Rate::fps(60_000, nz(2002)).well_known_name(),
+    Some("FPS_29_97")
+  );
+  assert_eq!(Rate::hz(48_000).well_known_name(), None);
+  assert_eq!(Rate::hz(0).well_known_name(), None);
 }
 
 #[test]
@@ -474,13 +676,11 @@ fn the_well_known_roster_holds_the_rationals_it_names() {
   }
 
   // The frame-rate entries are the reciprocals of the rate they are named
-  // for — the trap the roster's doc warns about.
+  // for — the trap the roster's doc warns about, and what `Rate` is the other
+  // side of.
   assert_eq!(
-    Timebase::NTSC_VIDEO
-      .checked_recip()
-      .expect("has a reciprocal")
-      .frames_to_duration(30_000),
-    Duration::from_secs(1001)
+    Rate::from_timebase(Timebase::NTSC_VIDEO).checked_frames_to_duration(30_000),
+    Some(Duration::from_secs(1001))
   );
 }
 

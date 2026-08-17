@@ -306,6 +306,54 @@ quickcheck! {
     x.cmp_semantic(&y).is_eq() && x.cmp_semantic(&SignedDuration::new(0, any_timebase(tb))).is_eq()
   }
 
+  /// A rate is a timebase read the other way round, and reading it back is
+  /// where it started — *structurally*, nothing reduced on the way. The
+  /// degenerate rate is the only one without the reading.
+  fn a_rate_is_its_timebase_read_backwards(tb: (u32, u32)) -> bool {
+    let rational = any_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    match rate.checked_to_timebase().and_then(Rate::checked_from_timebase) {
+      Some(back) => format!("{back:?}") == format!("{rate:?}"),
+      None => rate.num() == 0,
+    }
+  }
+
+  /// A rate that answers to a roster name reads back from that name, in any
+  /// ASCII casing, and the canonical spelling is what comes back out.
+  fn the_rate_name_table_reads_both_ways(tb: (u32, u32), upper: bool) -> bool {
+    let rational = any_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    match rate.well_known_name() {
+      Some(name) => {
+        let folded: String = name.chars().map(|c| if upper { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() }).collect();
+        Rate::from_name(&folded) == Some(rate) && Rate::from_name(name) == Some(rate)
+      }
+      None => true,
+    }
+  }
+
+  /// A whole number of seconds' worth of events is that many seconds, exactly
+  /// — at any whole rate, which is the answer the conversion cannot round its
+  /// way out of.
+  fn whole_seconds_of_frames_are_whole_seconds(rate: u16, secs: u16) -> bool {
+    let rate = (rate % 1000) as i64 + 1;
+    let frames = rate * (secs as i64);
+    Rate::hz(rate as i32).checked_frames_to_duration(frames)
+      == Some(Duration::from_secs(secs as u64))
+  }
+
+  /// The two frame-count rungs agree wherever the checked one answers. The
+  /// rate is drawn non-degenerate, that being where the saturating rung
+  /// panics rather than answering.
+  fn the_frames_to_duration_rungs_agree(frames: i64, tb: (u32, u32)) -> bool {
+    let rational = target_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    match rate.checked_frames_to_duration(frames) {
+      Some(d) => rate.saturating_frames_to_duration(frames) == d,
+      None => true,
+    }
+  }
+
   /// Shifting an instant by a span and asking what span separates the two
   /// returns the span — the law that makes the pair inverses.
   fn a_shift_and_the_span_it_moved_by_are_inverses(pts: i64, ticks: i64, tb: (u32, u32)) -> bool {

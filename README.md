@@ -46,7 +46,8 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 
 - **Value-based equality and ordering.** `1/2 == 2/4 == 3/6`; `Timestamp(1000, 1/1000) == Timestamp(90_000, 1/90_000)`. Cross-timebase `cmp` uses 128-bit cross-multiply — exact for any `i32` numerator/denominator with any `i64` PTS.
 - **Hash agrees with Eq.** Hashes the reduced-form rational, so equal rationals hash identically and you can use these types as `HashMap` keys.
-- **FFmpeg-style utilities.** `checked_rescale` / `saturating_rescale` (a.k.a. `av_rescale_q`, rounding to nearest with halfway cases away from zero, as FFmpeg's `AV_ROUND_NEAR_INF` does), `frames_to_duration`, `checked_duration_to_pts` / `checked_pts_to_duration`, `duration_since`, `saturating_sub_duration`. Every lossy conversion is spelled `checked_` or `saturating_` — there is no bare name whose overflow posture you have to remember.
+- **FFmpeg-style utilities.** `checked_rescale` / `saturating_rescale` (a.k.a. `av_rescale_q`, rounding to nearest with halfway cases away from zero, as FFmpeg's `AV_ROUND_NEAR_INF` does), `checked_duration_to_pts` / `checked_pts_to_duration`, `duration_since`, `saturating_sub_duration`. Every lossy conversion is spelled `checked_` or `saturating_` — there is no bare name whose overflow posture you have to remember.
+- **Rates are their own type.** `Rate` is a timebase read the other way round — events per second rather than seconds per tick — so a frame rate cannot reach `av_rescale_q` as a timebase by accident. It knows how long *n* frames take (`checked_frames_to_duration`), carries its own roster (`Rate::FPS_29_97`, `FPS_23_976`, …), and converts both ways with `to_timebase` / `from_timebase`.
 - **Signed spans.** `SignedDuration` is what the difference of two instants actually is — `later.signed_duration_since(&earlier)` — and `Duration` cannot hold it, being unsigned. It shifts an instant back again (`ts.checked_add_signed(span)`, `saturating_sub_signed`), adds and subtracts across timebases, and answers in the left operand's.
 - **Named timebases.** `Timebase::MILLIS`, `MPEG_90K`, `HZ_48K`, `NTSC_VIDEO`, `FILM_24` and the rest of the roster, each with the container or codec convention that declares it. `Timebase::from_name("MPEG_90K")` reads a name, `well_known_name()` writes one back, and `FromStr` accepts either a name or `num/den`.
 - **`TimeRange` interpolation.** Linear midpoint (`interpolate(t)`) for placing an event somewhere between fade-out and fade-in frames, with `t ∈ [0, 1]` clamped.
@@ -60,7 +61,7 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 ```rust
 use core::num::NonZeroI32;
 use core::time::Duration;
-use mediatime::{Timebase, Timestamp, TimeRange};
+use mediatime::{Rate, Timebase, Timestamp, TimeRange};
 
 // FFmpeg-style rational timebases — spelled out, or taken from the roster.
 let ms     = Timebase::new(1, NonZeroI32::new(1000).unwrap());
@@ -85,9 +86,15 @@ let span = b.signed_duration_since(&Timestamp::new(45_000, mpegts));
 assert_eq!(span.ticks(), 45_000); // half a second, on the MPEG clock
 assert_eq!(a.checked_add_signed(span), Some(Timestamp::new(1_500, ms)));
 
-// Frame rate helpers — treat `Timebase` as fps and count frames.
-let ntsc = Timebase::new(30_000, NonZeroI32::new(1001).unwrap());
-assert_eq!(ntsc.frames_to_duration(30_000), Duration::from_secs(1001));
+// A frame rate is its own type: the reciprocal reading, and it knows how
+// long n frames take.
+let ntsc = Rate::fps(30_000, NonZeroI32::new(1001).unwrap());
+assert_eq!(ntsc, Rate::FPS_29_97);
+assert_eq!(ntsc.to_timebase(), Timebase::NTSC_VIDEO);
+assert_eq!(
+  ntsc.checked_frames_to_duration(30_000),
+  Some(Duration::from_secs(1001))
+);
 
 // A half-open [start, end) range with interpolation.
 let r = TimeRange::new(100, 500, ms);

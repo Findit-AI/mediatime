@@ -40,6 +40,17 @@ fn timestamp_pts_is_non_negative() {
 }
 
 #[test]
+fn rate_is_a_well_formed_rational() {
+  for seed in 0..200 {
+    let data = pseudo_random_bytes(seed);
+    let mut u = Unstructured::new(&data);
+    let rate = Rate::arbitrary(&mut u).expect("enough bytes to build a Rate");
+    assert!(rate.den().get() > 0, "den was {}", rate.den());
+    assert!(rate.num() >= 0, "num was {}", rate.num());
+  }
+}
+
+#[test]
 fn signed_duration_spans_both_directions() {
   let mut backwards = false;
   let mut forwards = false;

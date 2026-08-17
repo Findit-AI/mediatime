@@ -111,9 +111,9 @@ pub(crate) const DEN_ONE: NonZeroI32 = nz(1);
 /// Every one of them is a **timebase**: seconds per tick. The frame-rate
 /// entries are therefore the *reciprocals* of the rate they are named for —
 /// [`FILM_24`](Self::FILM_24) is `1/24`, not `24/1` — because a PTS timebase
-/// and a frame rate are reciprocal readings of the same rational, as
-/// [`Self::frames_to_duration`] describes. [`Self::checked_recip`] converts
-/// between the two readings.
+/// and a frame rate are reciprocal readings of one rational. [`Rate`] is the
+/// other reading, with its own roster over the reciprocal values, and
+/// [`Self::checked_recip`] is the conversion under both of them.
 #[derive(Debug, Clone, Copy, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
@@ -363,11 +363,12 @@ impl Timebase {
   /// The reciprocal — `1/24` becomes `24/1` — or `None` when the numerator is
   /// zero and no reciprocal exists.
   ///
-  /// This is the conversion between the two readings of a `Timebase`: a PTS
-  /// timebase (seconds per tick) and a frame rate (frames per second) are
+  /// This is the conversion between the two readings of a rational: a PTS
+  /// timebase (seconds per tick) and a rate (events per second) are
   /// reciprocals, which is why the [roster](Self#the-well-known-roster) spells
-  /// [`FILM_24`](Self::FILM_24) as `1/24` and
-  /// [`Self::frames_to_duration`] wants `24/1`.
+  /// [`FILM_24`](Self::FILM_24) as `1/24` while [`Rate::FPS_24`] is `24/1`.
+  /// [`Rate::from_timebase`] and [`Rate::to_timebase`] are this method under
+  /// the names the reading is asked for by.
   ///
   /// A zero numerator is the only failure: the swap is otherwise total,
   /// because the constructor's `den > 0` becomes the new numerator's
@@ -442,37 +443,6 @@ impl Timebase {
     } else {
       q as i64
     }
-  }
-
-  /// Treats `self` as a frame rate (frames per second) and returns the
-  /// [`Duration`] corresponding to `frames` frames.
-  ///
-  /// Examples:
-  /// - 30 fps: `Timebase::new(30, nz(1)).frames_to_duration(15)` → 500 ms
-  /// - NTSC: `Timebase::new(30000, nz(1001)).frames_to_duration(30000)` → 1001 ms
-  ///
-  /// Note that "frame rate" and "PTS timebase" are conceptually *different*
-  /// rationals even though both are represented as [`Timebase`]. A 30 fps
-  /// stream typically has PTS timebase `1/30` (seconds per unit) and frame
-  /// rate `30/1` (frames per second) — they are reciprocals.
-  ///
-  /// # Panics
-  ///
-  /// Panics if `self.num() == 0` (division by zero).
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn frames_to_duration(&self, frames: u32) -> Duration {
-    // frames / (num/den) seconds = frames * den / num seconds
-    //
-    // `as u128` widens rather than sign-extends only because the constructor
-    // guarantees `num >= 0` and `den > 0`; a negative operand here would
-    // become an enormous positive one.
-    let num = self.num as u128;
-    let den = self.den.get() as u128;
-    assert!(num != 0, "frame rate numerator must be non-zero");
-    let total_ns = (frames as u128) * den * NANOS_PER_SEC / num;
-    let secs = (total_ns / NANOS_PER_SEC) as u64;
-    let nanos = (total_ns % NANOS_PER_SEC) as u32;
-    Duration::new(secs, nanos)
   }
 
   /// Converts a [`Duration`] into the number of ticks of this timebase that
@@ -1599,6 +1569,274 @@ impl fmt::Display for TimeRange {
   }
 }
 
+/// A rate — events per second — as a rational: `30000/1001` is NTSC video's
+/// 29.97 frames per second, `48000/1` an audio sample rate.
+///
+/// # The other reading of a [`Timebase`]
+///
+/// A rate and a PTS timebase are one rational read in opposite directions:
+/// seconds per tick one way, events per second the other. This type is the
+/// *rate* reading and stores the rate — `Rate::fps(30_000, nz(1001))` holds
+/// `30000/1001` — while [`Self::to_timebase`] hands back the `1001/30000` a
+/// PTS in that stream is counted in, and [`Self::from_timebase`] reads one
+/// back the other way.
+///
+/// Two readings in two types is what keeps a frame rate from reaching
+/// `av_rescale_q` as a timebase: the reciprocal is a conversion you ask for,
+/// not a mistake you make silently.
+///
+/// # What a rate knows
+///
+/// How long `n` events take — [`Self::checked_frames_to_duration`]. A timebase
+/// knows how long *one tick* is; how long *n frames* are is the rate's
+/// question, which is why that conversion lives here.
+///
+/// # Construction, equality and ordering
+///
+/// Construction routes through [`Timebase::new`] and inherits its invariants:
+/// non-negative numerator, positive denominator. A **zero numerator stays
+/// legal** — no events per second is a degenerate rate, comparable and
+/// storable, and the one input the reciprocal refuses.
+///
+/// Equality, ordering and [`Hash`] are the inner rational's, so they are
+/// value-based: `60000/2002` is `30000/1001`, and a greater rational is a
+/// faster rate. [`Default`] is the identity rational — one per second — as
+/// [`Timebase::default`] is.
+///
+/// # The well-known roster
+///
+/// [`FPS_23_976`](Self::FPS_23_976), [`FPS_29_97`](Self::FPS_29_97) and the
+/// rest are the frame rates containers declare, each with a name
+/// [`Self::from_name`] reads and [`Self::well_known_name`] writes back — the
+/// two-way table [`Timebase`] carries, over the reciprocal values.
+///
+/// # On the wire
+///
+/// `serde(transparent)`: a rate is written as the rational it is, under
+/// [`Timebase`]'s own field names and through its own validators. Declared
+/// rather than left to the newtype default, because a newtype struct is a
+/// shape some formats render and others erase, and this one has no shape of
+/// its own to render.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(transparent))]
+#[cfg_attr(
+  feature = "quickcheck",
+  derive(::quickcheck_richderive::Arbitrary),
+  quickcheck(arbitrary = "crate::quickcheck_impls::rate")
+)]
+pub struct Rate(Timebase);
+
+impl Rate {
+  /// 24000/1001 events per second (`23.976`) — film pulled down for NTSC, the
+  /// rate most film-sourced MP4 and MOV files declare.
+  pub const FPS_23_976: Self = Self(Timebase::new(24_000, nz(1_001)));
+
+  /// Exactly 24 frames per second — cinema's rate, and what a DCP counts in.
+  pub const FPS_24: Self = Self(Timebase::new(24, nz(1)));
+
+  /// Exactly 25 frames per second — PAL and SECAM broadcast, and EBU
+  /// timecode.
+  pub const FPS_25: Self = Self(Timebase::new(25, nz(1)));
+
+  /// 30000/1001 events per second (`29.97`) — NTSC video, and the rate
+  /// broadcast-sourced material in North America and Japan carries.
+  pub const FPS_29_97: Self = Self(Timebase::new(30_000, nz(1_001)));
+
+  /// Exactly 30 frames per second — digital capture that skips the NTSC
+  /// pulldown, and most screen recordings.
+  pub const FPS_30: Self = Self(Timebase::new(30, nz(1)));
+
+  /// Exactly 50 frames per second — PAL-region broadcast at double rate,
+  /// which is what 1080p50 and most European sports feeds carry.
+  pub const FPS_50: Self = Self(Timebase::new(50, nz(1)));
+
+  /// 60000/1001 events per second (`59.94`) — NTSC-region broadcast at double
+  /// rate, and what 1080p59.94 cameras record.
+  pub const FPS_59_94: Self = Self(Timebase::new(60_000, nz(1_001)));
+
+  /// Exactly 60 frames per second — high-frame-rate capture and game
+  /// recordings, the pulldown-free twin of [`FPS_59_94`](Self::FPS_59_94).
+  pub const FPS_60: Self = Self(Timebase::new(60, nz(1)));
+
+  /// `n` events per second, as a whole number: `Rate::hz(48_000)` is an audio
+  /// sample rate, `Rate::hz(30)` exactly 30 fps.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `n < 0`, as [`Timebase::new`] does. Zero is the degenerate
+  /// rate, and is accepted.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn hz(n: i32) -> Self {
+    Self(Timebase::new(n, DEN_ONE))
+  }
+
+  /// Fallible variant of [`Self::hz`]: `None` instead of a panic when `n < 0`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn try_hz(n: i32) -> Option<Self> {
+    match Timebase::try_new(n, DEN_ONE) {
+      Some(inner) => Some(Self(inner)),
+      None => None,
+    }
+  }
+
+  /// `num`/`den` events per second — the spelling the fractional broadcast
+  /// rates need: `Rate::fps(30_000, nz(1001))` is 29.97.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `num < 0` or `den <= 0`, as [`Timebase::new`] does.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn fps(num: i32, den: NonZeroI32) -> Self {
+    Self(Timebase::new(num, den))
+  }
+
+  /// Fallible variant of [`Self::fps`]: `None` instead of a panic.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn try_fps(num: i32, den: NonZeroI32) -> Option<Self> {
+    match Timebase::try_new(num, den) {
+      Some(inner) => Some(Self(inner)),
+      None => None,
+    }
+  }
+
+  /// Looks up a [well-known rate](Self#the-well-known-roster) by the name of
+  /// its constant — `"FPS_29_97"`, `"fps_29_97"`, `"Fps_29_97"`.
+  ///
+  /// Name lookup is **ASCII-case-insensitive**, and that is the whole of the
+  /// folding: the name is otherwise the constant's own, character for
+  /// character. The canonical spelling is the one
+  /// [`Self::well_known_name`] writes back.
+  pub fn from_name(name: &str) -> Option<Self> {
+    WELL_KNOWN_RATES
+      .iter()
+      .find_map(|(known, rate)| known.eq_ignore_ascii_case(name).then_some(*rate))
+  }
+
+  /// The canonical name of the [well-known rate](Self#the-well-known-roster)
+  /// this one *equals*, if any — the inverse of [`Self::from_name`], and the
+  /// spelling to write back out.
+  ///
+  /// Matched by value, as [`PartialEq`] matches: `60000/2002` is
+  /// [`FPS_29_97`](Self::FPS_29_97) and answers to that name. No two roster
+  /// entries are equal, so the answer is unambiguous.
+  pub fn well_known_name(&self) -> Option<&'static str> {
+    WELL_KNOWN_RATES
+      .iter()
+      .find_map(|(name, rate)| (rate == self).then_some(*name))
+  }
+
+  /// Returns the numerator — events per `den()` seconds.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn num(&self) -> i32 {
+    self.0.num()
+  }
+
+  /// Returns the denominator.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn den(&self) -> NonZeroI32 {
+    self.0.den()
+  }
+
+  /// The [`Timebase`] one event is counted in — the reciprocal rational, so
+  /// 29.97 fps (`30000/1001`) becomes `1001/30000` seconds per frame.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `self.num() == 0`: a rate of no events per second has no
+  /// reciprocal, an event that never happens having no duration between its
+  /// occurrences. Use [`Self::checked_to_timebase`] where the rate may be
+  /// degenerate.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn to_timebase(&self) -> Timebase {
+    match self.0.checked_recip() {
+      Some(timebase) => timebase,
+      None => panic!("rate numerator must be non-zero"),
+    }
+  }
+
+  /// The [`Timebase`] one event is counted in, or `None` for the degenerate
+  /// rate — the checked rung of [`Self::to_timebase`], and the only failure
+  /// the reciprocal has.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_to_timebase(&self) -> Option<Timebase> {
+    self.0.checked_recip()
+  }
+
+  /// Reads a [`Timebase`] as the rate it is the reciprocal of: `1/24` seconds
+  /// per frame becomes 24 frames per second.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `timebase.num() == 0`: a degenerate timebase names one instant,
+  /// and no rate counts events into it. Use [`Self::checked_from_timebase`]
+  /// where it may be degenerate.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn from_timebase(timebase: Timebase) -> Self {
+    match timebase.checked_recip() {
+      Some(rate) => Self(rate),
+      None => panic!("timebase numerator must be non-zero"),
+    }
+  }
+
+  /// Reads a [`Timebase`] as a rate, or `None` if it is degenerate — the
+  /// checked rung of [`Self::from_timebase`].
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_from_timebase(timebase: Timebase) -> Option<Self> {
+    match timebase.checked_recip() {
+      Some(rate) => Some(Self(rate)),
+      None => None,
+    }
+  }
+
+  /// How long `frames` events at this rate take, or `None` if no [`Duration`]
+  /// says so.
+  ///
+  /// Exactly [`Timebase::checked_pts_to_duration`] on the reciprocal, so it
+  /// rounds to the nearest nanosecond with halfway cases away from zero, as
+  /// every conversion in the crate does. Three things come back as `None`:
+  ///
+  /// - a negative `frames`, which [`Duration`] cannot represent;
+  /// - a span past [`Duration::MAX`];
+  /// - a degenerate `self.num() == 0` rate, whose events never happen.
+  ///
+  /// ```
+  /// use core::{num::NonZeroI32, time::Duration};
+  /// use mediatime::Rate;
+  ///
+  /// let ntsc = Rate::fps(30_000, NonZeroI32::new(1001).unwrap());
+  /// assert_eq!(
+  ///   ntsc.checked_frames_to_duration(30_000),
+  ///   Some(Duration::from_secs(1001))
+  /// );
+  /// assert_eq!(
+  ///   Rate::hz(30).checked_frames_to_duration(15),
+  ///   Some(Duration::from_millis(500))
+  /// );
+  /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_frames_to_duration(&self, frames: i64) -> Option<Duration> {
+    match self.checked_to_timebase() {
+      Some(timebase) => timebase.checked_pts_to_duration(frames),
+      None => None,
+    }
+  }
+
+  /// How long `frames` events at this rate take, clamping at both ends of what
+  /// a [`Duration`] can hold — the saturating rung of
+  /// [`Self::checked_frames_to_duration`]: a negative count clamps to
+  /// [`Duration::ZERO`], a span past [`Duration::MAX`] to it.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `self.num() == 0`, as [`Self::to_timebase`] does. Saturation is
+  /// a posture toward a span too long to hold, not toward a rate with no
+  /// reciprocal.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_frames_to_duration(&self, frames: i64) -> Duration {
+    self.to_timebase().saturating_pts_to_duration(frames)
+  }
+}
+
 /// Validators keeping `Deserialize` from being a second construction path.
 ///
 /// A derived `Deserialize` assigns fields directly, so every invariant the
@@ -1687,6 +1925,27 @@ const WELL_KNOWN: &[(&str, Timebase)] = &[
   ("NTSC_VIDEO", Timebase::NTSC_VIDEO),
   ("FILM_24", Timebase::FILM_24),
   ("PAL_25", Timebase::PAL_25),
+];
+
+/// The [well-known rates](Rate#the-well-known-roster) as one table, on the
+/// pattern of [`WELL_KNOWN`] and with the same two-way law: [`Rate::from_name`]
+/// reads it forward, [`Rate::well_known_name`] backward, and the first name
+/// listed for a value is the canonical spelling.
+///
+/// `from_name` folds ASCII case, so two entries differing only in case would
+/// make the forward direction ambiguous;
+/// `well_known_rate_names_do_not_collide_under_ascii_folding` pins that they
+/// do not, as `well_known_rates_are_pairwise_distinct` pins the backward
+/// direction.
+const WELL_KNOWN_RATES: &[(&str, Rate)] = &[
+  ("FPS_23_976", Rate::FPS_23_976),
+  ("FPS_24", Rate::FPS_24),
+  ("FPS_25", Rate::FPS_25),
+  ("FPS_29_97", Rate::FPS_29_97),
+  ("FPS_30", Rate::FPS_30),
+  ("FPS_50", Rate::FPS_50),
+  ("FPS_59_94", Rate::FPS_59_94),
+  ("FPS_60", Rate::FPS_60),
 ];
 
 /// The exact quotient of a rescale, in `i128` and rounded, before either rung
@@ -1860,7 +2119,7 @@ fn write_clock(f: &mut fmt::Formatter<'_>, pts: i64, timebase: Timebase) -> fmt:
 #[cfg(feature = "quickcheck")]
 #[cfg_attr(docsrs, doc(cfg(feature = "quickcheck")))]
 pub mod quickcheck_impls {
-  use crate::{SignedDuration, TimeRange, Timebase, Timestamp};
+  use crate::{Rate, SignedDuration, TimeRange, Timebase, Timestamp};
   use core::num::NonZeroI32;
   use quickcheck::{Arbitrary, Gen};
 
@@ -1881,6 +2140,14 @@ pub mod quickcheck_impls {
   /// Non-negative `pts` + arbitrary `Timebase`.
   pub fn timestamp(g: &mut Gen) -> Timestamp {
     Timestamp::new(non_negative_i64(g), timebase(g))
+  }
+
+  /// Any rational read as a rate, the degenerate `0/den` included: no events
+  /// per second is the reciprocal's refusal arm, and a generator that never
+  /// produced it would never reach that arm.
+  pub fn rate(g: &mut Gen) -> Rate {
+    let rational = timebase(g);
+    Rate::fps(rational.num(), rational.den())
   }
 
   /// Full-range tick count + arbitrary `Timebase`. Unlike the instant above,
@@ -1934,6 +2201,15 @@ const _: () = {
   impl<'a> Arbitrary<'a> for Timestamp {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
       non_negative_i64(u).and_then(|i| u.arbitrary().map(|tb| Self::new(i, tb)))
+    }
+  }
+
+  impl<'a> Arbitrary<'a> for Rate {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+      // Built from the rational the `Timebase` impl already draws in range,
+      // read as a rate rather than converted into one.
+      let rational: Timebase = u.arbitrary()?;
+      Ok(Self::fps(rational.num(), rational.den()))
     }
   }
 

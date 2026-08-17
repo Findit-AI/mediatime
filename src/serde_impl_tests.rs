@@ -101,6 +101,23 @@ fn field_names_are_unchanged() {
 }
 
 #[test]
+fn rate_deserialize_is_its_rational() {
+  // A newtype is transparent on the wire, so a rate arrives as the rational
+  // it is — under the `Timebase` field names, with the `Timebase` validators.
+  fn de_rate(num: i32, den: i32) -> Result<Rate, Error> {
+    Rate::deserialize(MapDeserializer::new(
+      [("numerator", num), ("denominator", den)].into_iter(),
+    ))
+  }
+
+  assert_eq!(de_rate(30_000, 1001).unwrap(), Rate::FPS_29_97);
+  assert_eq!(de_rate(0, 1).unwrap(), Rate::hz(0));
+  assert!(de_rate(-1, 1001).is_err());
+  assert!(de_rate(30_000, 0).is_err());
+  assert!(de_rate(30_000, -1001).is_err());
+}
+
+#[test]
 fn signed_duration_deserialize_admits_both_directions() {
   let ms = Timebase::new(1, nz(1000));
   assert_eq!(
