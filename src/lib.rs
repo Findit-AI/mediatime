@@ -658,7 +658,10 @@ impl fmt::Display for Timebase {
 /// instant `(pts · num, den)`, so equal timestamps hash the same.
 ///
 /// Cross-timebase comparisons use 128-bit cross-multiplication — no division,
-/// no rounding error. Same-timebase comparisons take a fast path on `pts`.
+/// no rounding error. Same-timebase comparisons take a fast path on `pts`,
+/// except under a degenerate `0/den` timebase, where every PTS names instant
+/// zero and the counts therefore say nothing about the instants: those fall
+/// back to the cross-multiply, and all of them compare equal.
 #[derive(Debug, Default, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
@@ -885,30 +888,26 @@ impl Timestamp {
   /// they represent, rescaling if timebases differ.
   ///
   /// Uses a 128-bit cross-multiply for the mixed-timebase case; no division,
-  /// so no rounding error. Same-timebase comparisons take a direct fast path.
+  /// so no rounding error. Same-timebase comparisons take a direct fast path,
+  /// the degenerate timebase excepted — see the guard at the site.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn cmp_semantic(&self, other: &Self) -> Ordering {
-    if self.timebase.is_identical(&other.timebase) {
-      return if self.pts < other.pts {
-        Ordering::Less
-      } else if self.pts > other.pts {
-        Ordering::Greater
-      } else {
-        Ordering::Equal
-      };
+    // The identical-timebase fast path is sound only where a tick spans time.
+    // Under a degenerate `0/den` every PTS names instant zero, so comparing
+    // the counts would report an order the instants do not have — and would
+    // disagree with the cross-multiply's `Equal` against a *differently
+    // written* degenerate timebase, which is how an intransitive `==` is
+    // built. Measured before the guard existed: `1 @ 0/3` equalled `1 @ 0/5`
+    // and `2 @ 0/3` equalled it too, while the first two compared unequal.
+    if self.timebase.is_identical(&other.timebase) && self.timebase.num != 0 {
+      return cmp_i128(self.pts as i128, other.pts as i128);
     }
     // self.pts * self.num / self.den  vs  other.pts * other.num / other.den
     //   ⇔ self.pts * self.num * other.den  vs  other.pts * other.num * self.den
     let lhs = (self.pts as i128) * (self.timebase.num as i128) * (other.timebase.den.get() as i128);
     let rhs =
       (other.pts as i128) * (other.timebase.num as i128) * (self.timebase.den.get() as i128);
-    if lhs < rhs {
-      Ordering::Less
-    } else if lhs > rhs {
-      Ordering::Greater
-    } else {
-      Ordering::Equal
-    }
+    cmp_i128(lhs, rhs)
   }
 
   /// Returns the [`Duration`] from PTS zero (in this timebase) to `self`, or
@@ -986,6 +985,9 @@ impl Hash for Timestamp {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn hash<H: Hasher>(&self, state: &mut H) {
     // Canonical representation: instant as reduced rational (pts * num, den).
+    // A degenerate `0/den` reduces to `(0, 1)` whatever the PTS, which is the
+    // same collapse `cmp_semantic`'s degeneracy guard makes — the two agree
+    // there because both read the instant rather than the count.
     let n: i128 = (self.pts as i128) * (self.timebase.num as i128);
     // Exact widening: the constructor guarantees `den > 0`.
     let d: u128 = self.timebase.den.get().unsigned_abs() as u128;

@@ -69,9 +69,9 @@ fn fold(name: &str, upper: bool) -> String {
     .collect()
 }
 
-fn hash_of(tb: &Timebase) -> u64 {
+fn hash_of<T: Hash>(v: &T) -> u64 {
   let mut h = std::collections::hash_map::DefaultHasher::new();
-  tb.hash(&mut h);
+  v.hash(&mut h);
   h.finish()
 }
 
@@ -138,6 +138,35 @@ quickcheck! {
       Ordering::Greater => rx >= ry,
       Ordering::Equal => rx == ry,
     }
+  }
+
+  /// `cmp_semantic` is an order, degenerate timebases included — the twin of
+  /// `span_semantic_order_is_transitive`, over the instants, and drawn from
+  /// the same tiny pool for the same reason.
+  fn instant_semantic_order_is_transitive(a: (i8, u32, u32), b: (i8, u32, u32), c: (i8, u32, u32)) -> bool {
+    let at = |(pts, num, den): (i8, u32, u32)| Timestamp::new(pts as i64, coarse_timebase((num, den)));
+    let (x, y, z) = (at(a), at(b), at(c));
+    !(x.cmp_semantic(&y).is_le() && y.cmp_semantic(&z).is_le()) || x.cmp_semantic(&z).is_le()
+  }
+
+  /// Every PTS of a degenerate `0/den` tick names instant zero, so all such
+  /// instants compare equal — to each other, however each is written, and to
+  /// zero anywhere else — and hash alike, which is the law an ordered or
+  /// hashed container is entitled to.
+  ///
+  /// Degenerate **by construction** rather than waited for, for the reason
+  /// `every_span_in_a_degenerate_timebase_measures_zero` records: a
+  /// full-range numerator is zero approximately never, and reaching this
+  /// corner by drawing needs three degenerate timebases at once, two of them
+  /// written identically. Measured against a fast path with the degeneracy
+  /// guard removed, this property failed 3 runs in 3 while
+  /// `instant_semantic_order_is_transitive` above failed 0 in 3 — so this is
+  /// the one holding the guard down, and it must stay drawn this way.
+  fn every_instant_in_a_degenerate_timebase_is_instant_zero(a: (i64, u32), b: (i64, u32), tb: (u32, u32)) -> bool {
+    let nowhere = |(pts, den): (i64, u32)| Timestamp::new(pts, Timebase::new(0, nz((den % 4 + 1) as i32)));
+    let (x, y) = (nowhere(a), nowhere(b));
+    let origin = Timestamp::new(0, any_timebase(tb));
+    x == y && x == origin && hash_of(&x) == hash_of(&y) && hash_of(&x) == hash_of(&origin)
   }
 
   /// `Duration` → ticks is the same conversion as a rescale out of

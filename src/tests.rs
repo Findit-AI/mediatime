@@ -319,6 +319,59 @@ fn timestamp_hash_negative_pts() {
 }
 
 #[test]
+fn timestamp_eq_stays_transitive_on_degenerate_timebases() {
+  // Every PTS of a `0/den` tick names instant zero, so all three of these are
+  // the same instant. The unguarded identical-timebase fast path called the
+  // first two unequal while the cross-multiply called each of them equal to
+  // the third — an `==` that is not an equivalence, and an `Ord` that is not
+  // an order.
+  let a = Timestamp::new(1, Timebase::new(0, nz(3)));
+  let b = Timestamp::new(2, Timebase::new(0, nz(3)));
+  let c = Timestamp::new(1, Timebase::new(0, nz(5)));
+  assert_eq!(a, b);
+  assert_eq!(b, c);
+  assert_eq!(a, c);
+
+  // Instant zero in a timebase that spans time is the same instant again, and
+  // `Hash` reduces all four to `(0, 1)` — it agreed with the semantics before
+  // the guard did.
+  let origin = Timestamp::new(0, Timebase::MILLIS);
+  assert_eq!(a, origin);
+  assert_eq!(hash_of(&a), hash_of(&b));
+  assert_eq!(hash_of(&a), hash_of(&origin));
+}
+
+#[test]
+fn degenerate_timestamps_are_one_key_in_an_ordered_container() {
+  use std::collections::BTreeMap;
+
+  // What an intransitive comparison costs a caller: `BTreeMap` and `sort` both
+  // assume `Ord` is a total order, and neither re-checks.
+  let a = Timestamp::new(1, Timebase::new(0, nz(3)));
+  let b = Timestamp::new(2, Timebase::new(0, nz(3)));
+  let c = Timestamp::new(1, Timebase::new(0, nz(5)));
+
+  let mut map = BTreeMap::new();
+  map.insert(a, "a");
+  map.insert(b, "b");
+  map.insert(c, "c");
+  assert_eq!(map.len(), 1);
+  assert_eq!(map.get(&a), Some(&"c"));
+  assert_eq!(map.get(&b), Some(&"c"));
+  assert_eq!(map.get(&Timestamp::new(0, Timebase::MILLIS)), Some(&"c"));
+
+  // Sorted means every earlier element is `<=` every later one, not merely its
+  // neighbour: the pairwise check is what an intransitive comparator fails.
+  let mut sorted = [b, c, a];
+  sorted.sort();
+  for (i, earlier) in sorted.iter().enumerate() {
+    for later in &sorted[i + 1..] {
+      assert!(earlier <= later);
+    }
+  }
+}
+
+#[test]
 fn rescale_to_preserves_instant() {
   let ms = Timebase::new(1, nz(1000));
   let mpeg = Timebase::new(1, nz(90_000));
