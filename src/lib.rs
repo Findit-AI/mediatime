@@ -106,10 +106,24 @@ pub(crate) const DEN_ONE: NonZeroI32 = nz(1);
 ///
 /// # The well-known roster
 ///
-/// The constants on this type — [`MILLIS`](Self::MILLIS),
-/// [`MPEG_90K`](Self::MPEG_90K), [`NTSC_VIDEO`](Self::NTSC_VIDEO) and the
-/// rest — are the timebases containers and codecs actually declare, each with
-/// a name [`Self::from_name`] reads and [`Self::well_known_name`] writes back.
+/// The constants on this type are the timebases containers and codecs
+/// actually declare, each with a name [`Self::from_name`] reads and
+/// [`Self::well_known_name`] writes back. They come in three families:
+///
+/// - **Clock subdivisions** — [`SECONDS`](Self::SECONDS),
+///   [`MILLIS`](Self::MILLIS), [`MICROS`](Self::MICROS) and
+///   [`NANOS`](Self::NANOS), plus [`MPEG_90K`](Self::MPEG_90K), the fixed
+///   clock MPEG counts PTS in.
+/// - **Audio sample intervals** — fourteen, [`HZ_8K`](Self::HZ_8K) up to
+///   [`HZ_192K`](Self::HZ_192K): one tick per sample at each rate the audio
+///   codecs declare.
+/// - **Frame intervals** — eight, the reciprocals of [`Rate`]'s eight frame
+///   rates entry for entry. An `NTSC_` prefix marks the three carrying NTSC's
+///   1001 pulldown ([`NTSC_FILM`](Self::NTSC_FILM),
+///   [`NTSC_VIDEO`](Self::NTSC_VIDEO), [`NTSC_60`](Self::NTSC_60)); the other
+///   five are exact, and are named for the convention that declares them
+///   ([`FILM_24`](Self::FILM_24), [`PAL_25`](Self::PAL_25),
+///   [`VIDEO_30`](Self::VIDEO_30) and so on).
 ///
 /// Every one of them is a **timebase**: seconds per tick. The frame-rate
 /// entries are therefore the *reciprocals* of the rate they are named for —
@@ -117,6 +131,17 @@ pub(crate) const DEN_ONE: NonZeroI32 = nz(1);
 /// and a frame rate are reciprocal readings of one rational. [`Rate`] is the
 /// other reading, with its own roster over the reciprocal values, and
 /// [`Self::checked_recip`] is the conversion under both of them.
+///
+/// ## What earns a name
+///
+/// A name is worth carrying where every file that declares the value means
+/// the same thing by it, so the roster holds the values a *convention* travels
+/// with: a codec's sample rate, a region's frame rate, a container's fixed
+/// clock. Matroska's default `TimecodeScale` and FLV's timestamps are both
+/// millisecond counts, so both read as [`MILLIS`](Self::MILLIS) — one value,
+/// one name, and no container-specific alias standing beside it. An MP4/MOV
+/// timescale is chosen per file by the muxer, so it carries no convention to
+/// name and this type carries it as the rational it is.
 #[derive(Debug, Clone, Copy, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
@@ -150,8 +175,8 @@ impl Timebase {
   pub const SECONDS: Self = Self::new(1, nz(1));
 
   /// Millisecond ticks — Matroska's default `TimecodeScale` (1 000 000 ns),
-  /// WebVTT and SRT cue times, and the unit most application-level media APIs
-  /// report positions in.
+  /// FLV's timestamps, WebVTT and SRT cue times, and the unit most
+  /// application-level media APIs report positions in.
   pub const MILLIS: Self = Self::new(1, nz(1_000));
 
   /// Microsecond ticks — FFmpeg's `AV_TIME_BASE`, which is the unit
@@ -168,13 +193,64 @@ impl Timebase {
   /// RTP's video clock rate all use it.
   pub const MPEG_90K: Self = Self::new(1, nz(90_000));
 
-  /// One tick per audio sample at 48 kHz — DVD and broadcast audio,
-  /// professional interchange, and Opus, whose clock rate is always 48 kHz.
-  pub const HZ_48K: Self = Self::new(1, nz(48_000));
+  /// One tick per audio sample at 8 kHz — narrowband telephony: G.711 and
+  /// AMR-NB, and the clock rate RTP fixes the PCM payload types at.
+  pub const HZ_8K: Self = Self::new(1, nz(8_000));
+
+  /// One tick per audio sample at 11.025 kHz — a quarter of the CD rate,
+  /// which is how legacy WAV and MPEG-2.5 Layer III reach a low rate without
+  /// leaving the 44.1 kHz family.
+  pub const HZ_11_025K: Self = Self::new(1, nz(11_025));
+
+  /// One tick per audio sample at 12 kHz — a quarter of 48 kHz, and the
+  /// bottom of that family in MPEG-2.5 Layer III and MPEG-4 AAC.
+  pub const HZ_12K: Self = Self::new(1, nz(12_000));
+
+  /// One tick per audio sample at 16 kHz — wideband speech: AMR-WB, Opus's
+  /// wideband mode, and the rate most speech models take their input at.
+  pub const HZ_16K: Self = Self::new(1, nz(16_000));
+
+  /// One tick per audio sample at 22.05 kHz — half the CD rate, carried by
+  /// legacy WAV and by MPEG-2's low-sampling-frequency Layer III.
+  pub const HZ_22_05K: Self = Self::new(1, nz(22_050));
+
+  /// One tick per audio sample at 24 kHz — half of 48 kHz: MPEG-2's
+  /// low-sampling-frequency extension, and what a low-bitrate AAC or Vorbis
+  /// stream commonly decodes to.
+  pub const HZ_24K: Self = Self::new(1, nz(24_000));
+
+  /// One tick per audio sample at 32 kHz — MPEG-1 audio's third rate, and the
+  /// one NICAM television sound carries.
+  pub const HZ_32K: Self = Self::new(1, nz(32_000));
 
   /// One tick per audio sample at 44.1 kHz — CD-DA's rate, and the one most
   /// MP3 and AAC music files carry.
   pub const HZ_44_1K: Self = Self::new(1, nz(44_100));
+
+  /// One tick per audio sample at 48 kHz — DVD and broadcast audio,
+  /// professional interchange, and Opus, whose clock rate is always 48 kHz.
+  pub const HZ_48K: Self = Self::new(1, nz(48_000));
+
+  /// One tick per audio sample at 64 kHz — the step between 48 kHz and the
+  /// doubled rates, declared by MPEG-4 AAC's sample-frequency table.
+  pub const HZ_64K: Self = Self::new(1, nz(64_000));
+
+  /// One tick per audio sample at 88.2 kHz — double the CD rate, so a
+  /// high-resolution master stays in the 44.1 kHz family and a downconvert to
+  /// CD is an exact halving.
+  pub const HZ_88_2K: Self = Self::new(1, nz(88_200));
+
+  /// One tick per audio sample at 96 kHz — double 48 kHz: DVD-Audio, Blu-ray,
+  /// and the rate professional recording works at above a 48 kHz delivery.
+  pub const HZ_96K: Self = Self::new(1, nz(96_000));
+
+  /// One tick per audio sample at 176.4 kHz — quadruple the CD rate, the top
+  /// of the 44.1 kHz family in high-resolution PCM.
+  pub const HZ_176_4K: Self = Self::new(1, nz(176_400));
+
+  /// One tick per audio sample at 192 kHz — quadruple 48 kHz, and the highest
+  /// PCM rate Blu-ray and professional audio interfaces carry.
+  pub const HZ_192K: Self = Self::new(1, nz(192_000));
 
   /// One tick per frame at 24000/1001 fps (`23.976`) — film pulled down for
   /// NTSC, which is what most film-sourced MP4 and MOV files declare.
@@ -182,13 +258,6 @@ impl Timebase {
   /// The reciprocal of the frame rate, per the [roster's
   /// note](Self#the-well-known-roster).
   pub const NTSC_FILM: Self = Self::new(1_001, nz(24_000));
-
-  /// One tick per frame at 30000/1001 fps (`29.97`) — NTSC video, and the
-  /// rate broadcast-sourced material in North America and Japan carries.
-  ///
-  /// The reciprocal of the frame rate, per the [roster's
-  /// note](Self#the-well-known-roster).
-  pub const NTSC_VIDEO: Self = Self::new(1_001, nz(30_000));
 
   /// One tick per frame at exactly 24 fps — cinema's rate, and what a DCP
   /// counts in.
@@ -203,6 +272,44 @@ impl Timebase {
   /// The reciprocal of the frame rate, per the [roster's
   /// note](Self#the-well-known-roster).
   pub const PAL_25: Self = Self::new(1, nz(25));
+
+  /// One tick per frame at 30000/1001 fps (`29.97`) — NTSC video, and the
+  /// rate broadcast-sourced material in North America and Japan carries.
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const NTSC_VIDEO: Self = Self::new(1_001, nz(30_000));
+
+  /// One tick per frame at exactly 30 fps — digital capture that skips the
+  /// NTSC pulldown, and what most screen recordings declare. The
+  /// pulldown-free twin of [`NTSC_VIDEO`](Self::NTSC_VIDEO).
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const VIDEO_30: Self = Self::new(1, nz(30));
+
+  /// One tick per frame at exactly 50 fps — PAL-region broadcast at double
+  /// rate, which is what 1080p50 and most European sports feeds carry.
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const PAL_50: Self = Self::new(1, nz(50));
+
+  /// One tick per frame at 60000/1001 fps (`59.94`) — NTSC-region broadcast
+  /// at double rate, and what 1080p59.94 cameras record. The `NTSC_` prefix
+  /// is the pulldown, as it is on [`NTSC_VIDEO`](Self::NTSC_VIDEO); exactly
+  /// sixty is [`VIDEO_60`](Self::VIDEO_60).
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const NTSC_60: Self = Self::new(1_001, nz(60_000));
+
+  /// One tick per frame at exactly 60 fps — high-frame-rate capture and game
+  /// recordings, the pulldown-free twin of [`NTSC_60`](Self::NTSC_60).
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const VIDEO_60: Self = Self::new(1, nz(60));
 
   /// Creates a new `Timebase` with the given numerator and denominator.
   ///
@@ -1688,6 +1795,11 @@ impl fmt::Display for TimeRange {
 /// [`Self::from_name`] reads and [`Self::well_known_name`] writes back — the
 /// two-way table [`Timebase`] carries, over the reciprocal values.
 ///
+/// The eight are mirrored on [`Timebase`]'s roster entry for entry: every rate
+/// here reciprocates onto a named timebase and back, so a rate a container
+/// declares can be said by name in either reading, and neither roster grows a
+/// frame rate without the other.
+///
 /// # On the wire
 ///
 /// `serde(transparent)`: a rate is written as the rational it is, under
@@ -2015,18 +2127,39 @@ use de::{de_den, de_num};
 /// direction folds ASCII case, so it is single-valued only because no two
 /// names fold together;
 /// `well_known_timebase_names_do_not_collide_under_ascii_folding` pins that.
+///
+/// The frame-interval tail is [`WELL_KNOWN_RATES`] reciprocated, entry for
+/// entry and in the same order, so the two tables read as one family from
+/// either side; `the_frame_interval_family_is_the_rate_roster_reciprocated`
+/// pins that neither can grow without the other.
 const WELL_KNOWN: &[(&str, Timebase)] = &[
   ("SECONDS", Timebase::SECONDS),
   ("MILLIS", Timebase::MILLIS),
   ("MICROS", Timebase::MICROS),
   ("NANOS", Timebase::NANOS),
   ("MPEG_90K", Timebase::MPEG_90K),
-  ("HZ_48K", Timebase::HZ_48K),
+  ("HZ_8K", Timebase::HZ_8K),
+  ("HZ_11_025K", Timebase::HZ_11_025K),
+  ("HZ_12K", Timebase::HZ_12K),
+  ("HZ_16K", Timebase::HZ_16K),
+  ("HZ_22_05K", Timebase::HZ_22_05K),
+  ("HZ_24K", Timebase::HZ_24K),
+  ("HZ_32K", Timebase::HZ_32K),
   ("HZ_44_1K", Timebase::HZ_44_1K),
+  ("HZ_48K", Timebase::HZ_48K),
+  ("HZ_64K", Timebase::HZ_64K),
+  ("HZ_88_2K", Timebase::HZ_88_2K),
+  ("HZ_96K", Timebase::HZ_96K),
+  ("HZ_176_4K", Timebase::HZ_176_4K),
+  ("HZ_192K", Timebase::HZ_192K),
   ("NTSC_FILM", Timebase::NTSC_FILM),
-  ("NTSC_VIDEO", Timebase::NTSC_VIDEO),
   ("FILM_24", Timebase::FILM_24),
   ("PAL_25", Timebase::PAL_25),
+  ("NTSC_VIDEO", Timebase::NTSC_VIDEO),
+  ("VIDEO_30", Timebase::VIDEO_30),
+  ("PAL_50", Timebase::PAL_50),
+  ("NTSC_60", Timebase::NTSC_60),
+  ("VIDEO_60", Timebase::VIDEO_60),
 ];
 
 /// The [well-known rates](Rate#the-well-known-roster) as one table, on the
@@ -2039,6 +2172,10 @@ const WELL_KNOWN: &[(&str, Timebase)] = &[
 /// `well_known_rate_names_do_not_collide_under_ascii_folding` pins that they
 /// do not, as `well_known_rates_are_pairwise_distinct` pins the backward
 /// direction.
+///
+/// Every entry reciprocates onto a named entry of [`WELL_KNOWN`] and back —
+/// `every_well_known_rate_reciprocates_onto_a_named_timebase` — so a rate
+/// added here without its timebase twin fails that test.
 const WELL_KNOWN_RATES: &[(&str, Rate)] = &[
   ("FPS_23_976", Rate::FPS_23_976),
   ("FPS_24", Rate::FPS_24),

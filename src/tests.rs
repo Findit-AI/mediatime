@@ -714,12 +714,28 @@ fn the_well_known_roster_holds_the_rationals_it_names() {
     (Timebase::MICROS, 1, 1_000_000),
     (Timebase::NANOS, 1, 1_000_000_000),
     (Timebase::MPEG_90K, 1, 90_000),
-    (Timebase::HZ_48K, 1, 48_000),
+    (Timebase::HZ_8K, 1, 8_000),
+    (Timebase::HZ_11_025K, 1, 11_025),
+    (Timebase::HZ_12K, 1, 12_000),
+    (Timebase::HZ_16K, 1, 16_000),
+    (Timebase::HZ_22_05K, 1, 22_050),
+    (Timebase::HZ_24K, 1, 24_000),
+    (Timebase::HZ_32K, 1, 32_000),
     (Timebase::HZ_44_1K, 1, 44_100),
+    (Timebase::HZ_48K, 1, 48_000),
+    (Timebase::HZ_64K, 1, 64_000),
+    (Timebase::HZ_88_2K, 1, 88_200),
+    (Timebase::HZ_96K, 1, 96_000),
+    (Timebase::HZ_176_4K, 1, 176_400),
+    (Timebase::HZ_192K, 1, 192_000),
     (Timebase::NTSC_FILM, 1_001, 24_000),
-    (Timebase::NTSC_VIDEO, 1_001, 30_000),
     (Timebase::FILM_24, 1, 24),
     (Timebase::PAL_25, 1, 25),
+    (Timebase::NTSC_VIDEO, 1_001, 30_000),
+    (Timebase::VIDEO_30, 1, 30),
+    (Timebase::PAL_50, 1, 50),
+    (Timebase::NTSC_60, 1_001, 60_000),
+    (Timebase::VIDEO_60, 1, 60),
   ] {
     assert_eq!(tb.num(), num, "{tb}");
     assert_eq!(tb.den().get(), den, "{tb}");
@@ -735,6 +751,12 @@ fn the_well_known_roster_holds_the_rationals_it_names() {
     Rate::from_timebase(Timebase::NTSC_VIDEO).checked_frames_to_duration(30_000),
     Some(Duration::from_secs(1001))
   );
+
+  // The two families' nearest miss: the 24 kHz sample interval and the 23.976
+  // frame interval share a denominator and differ only in the pulldown
+  // numerator, so a numerator typo on either collapses them into one entry.
+  assert_eq!(Timebase::HZ_24K.den(), Timebase::NTSC_FILM.den());
+  assert_ne!(Timebase::HZ_24K, Timebase::NTSC_FILM);
 }
 
 #[test]
@@ -754,7 +776,10 @@ fn from_name_and_well_known_name_are_one_table_read_both_ways() {
     assert_eq!(Timebase::from_name(name), Some(*tb), "{name}");
     assert_eq!(tb.well_known_name(), Some(*name), "{name}");
   }
-  assert_eq!(WELL_KNOWN.len(), 11);
+  // A count, so adding a constant without listing it here is noticed: five
+  // clock subdivisions, fourteen audio sample intervals, eight frame
+  // intervals.
+  assert_eq!(WELL_KNOWN.len(), 5 + 14 + 8);
 }
 
 #[test]
@@ -764,16 +789,35 @@ fn from_name_folds_case_and_nothing_else() {
     assert_eq!(Timebase::from_name(s), Some(Timebase::MILLIS), "{s:?}");
   }
 
-  // Case is the whole of the folding: no alias, no trimming, no rational
-  // parsing on this door.
+  // The digits and underscores of a sample-rate name fold no differently, a
+  // fold being over ASCII letters only.
+  for s in ["HZ_11_025K", "hz_11_025k", "Hz_11_025K"] {
+    assert_eq!(Timebase::from_name(s), Some(Timebase::HZ_11_025K), "{s:?}");
+  }
+
+  // Case is the whole of the folding: no trimming, no separator guessing, no
+  // rational parsing on this door.
   for s in [" MILLIS", "MILLIS ", "MS", "MILLI", "1/1000", ""] {
     assert_eq!(Timebase::from_name(s), None, "{s:?}");
   }
 
-  // And the canonical spelling is what comes back out.
+  // And no alias: one value, one name. A container that counts in
+  // milliseconds answers to `MILLIS` rather than to its own name, a roster
+  // value has no second spelling beside the constant's, and the rate roster's
+  // names are not this door's.
+  for s in ["MATROSKA", "FLV", "HZ_44100", "HZ_44_1KHZ", "FPS_60"] {
+    assert_eq!(Timebase::from_name(s), None, "{s:?}");
+  }
+
+  // And the canonical spelling is what comes back out, on an old entry and a
+  // new one alike.
   assert_eq!(
     Timebase::from_name("millis").and_then(|tb| tb.well_known_name()),
     Some("MILLIS")
+  );
+  assert_eq!(
+    Timebase::from_name("video_60").and_then(|tb| tb.well_known_name()),
+    Some("VIDEO_60")
   );
 }
 
@@ -803,6 +847,89 @@ fn well_known_name_matches_by_value_not_by_spelling() {
   // Nothing outside the roster gets a name.
   assert_eq!(Timebase::new(1, nz(7)).well_known_name(), None);
   assert_eq!(Timebase::new(0, nz(3)).well_known_name(), None);
+}
+
+#[test]
+fn every_well_known_rate_reciprocates_onto_a_named_timebase() {
+  // Half of the two-roster lock, spelled out pair by pair so the mirror is
+  // greppable and a pairing that drifts is named in the failure.
+  for (rate_name, timebase_name) in [
+    ("FPS_23_976", "NTSC_FILM"),
+    ("FPS_24", "FILM_24"),
+    ("FPS_25", "PAL_25"),
+    ("FPS_29_97", "NTSC_VIDEO"),
+    ("FPS_30", "VIDEO_30"),
+    ("FPS_50", "PAL_50"),
+    ("FPS_59_94", "NTSC_60"),
+    ("FPS_60", "VIDEO_60"),
+  ] {
+    let rate = Rate::from_name(rate_name).expect("on the rate roster");
+    assert_eq!(
+      rate.to_timebase().well_known_name(),
+      Some(timebase_name),
+      "{rate_name}"
+    );
+
+    let timebase = Timebase::from_name(timebase_name).expect("on the timebase roster");
+    assert_eq!(
+      Rate::from_timebase(timebase).well_known_name(),
+      Some(rate_name),
+      "{timebase_name}"
+    );
+  }
+
+  // And no rate is left out of that roll call: a constant added to
+  // `WELL_KNOWN_RATES` without its timebase twin reciprocates onto a rational
+  // nothing names, which is this assertion.
+  for (rate_name, rate) in WELL_KNOWN_RATES {
+    assert!(
+      rate.to_timebase().well_known_name().is_some(),
+      "{rate_name} reciprocates to {}, which no timebase constant names",
+      rate.to_timebase()
+    );
+  }
+}
+
+#[test]
+fn the_frame_interval_family_is_the_rate_roster_reciprocated() {
+  // The other half: exactly the frame-interval entries of `WELL_KNOWN`
+  // reciprocate into a *named* rate. The clock subdivisions and the audio
+  // sample intervals reciprocate into whole-number rates nothing names, so
+  // this list is the frame-interval family by derivation rather than by
+  // assertion, and the reciprocal map is onto as well as into — the two
+  // rosters are one family counted from either side.
+  let mirrored: Vec<&str> = WELL_KNOWN
+    .iter()
+    .filter(|(_, timebase)| {
+      Rate::checked_from_timebase(*timebase)
+        .and_then(|rate| rate.well_known_name())
+        .is_some()
+    })
+    .map(|(name, _)| *name)
+    .collect();
+
+  assert_eq!(
+    mirrored,
+    [
+      "NTSC_FILM",
+      "FILM_24",
+      "PAL_25",
+      "NTSC_VIDEO",
+      "VIDEO_30",
+      "PAL_50",
+      "NTSC_60",
+      "VIDEO_60",
+    ]
+  );
+  assert_eq!(mirrored.len(), WELL_KNOWN_RATES.len());
+
+  // The derivation holds only while no sample interval reciprocates onto a
+  // named rate. `HZ_24K` comes closest: it reciprocates to 24000/1, where
+  // `FPS_23_976` is 24000/1001.
+  assert_eq!(
+    Rate::from_timebase(Timebase::HZ_24K).well_known_name(),
+    None
+  );
 }
 
 #[test]
