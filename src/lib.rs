@@ -26,7 +26,10 @@ use serde::{Deserialize, Serialize};
 
 mod parse;
 
-pub use parse::{ParseTimeRangeError, ParseTimebaseError, ParseTimestampError};
+pub use parse::{
+  ParseRateError, ParseSignedDurationError, ParseTimeRangeError, ParseTimebaseError,
+  ParseTimestampError,
+};
 
 /// Nanoseconds in a second — the factor that turns a [`Duration`] into ticks
 /// of a [`Timebase`] and back.
@@ -103,17 +106,42 @@ pub(crate) const DEN_ONE: NonZeroI32 = nz(1);
 ///
 /// # The well-known roster
 ///
-/// The constants on this type — [`MILLIS`](Self::MILLIS),
-/// [`MPEG_90K`](Self::MPEG_90K), [`NTSC_VIDEO`](Self::NTSC_VIDEO) and the
-/// rest — are the timebases containers and codecs actually declare, each with
-/// a name [`Self::from_name`] reads and [`Self::well_known_name`] writes back.
+/// The constants on this type are the timebases containers and codecs
+/// actually declare, each with a name [`Self::from_name`] reads and
+/// [`Self::well_known_name`] writes back. They come in three families:
+///
+/// - **Clock subdivisions** — [`SECONDS`](Self::SECONDS),
+///   [`MILLIS`](Self::MILLIS), [`MICROS`](Self::MICROS) and
+///   [`NANOS`](Self::NANOS), plus [`MPEG_90K`](Self::MPEG_90K), the fixed
+///   clock MPEG counts PTS in.
+/// - **Audio sample intervals** — fourteen, [`HZ_8K`](Self::HZ_8K) up to
+///   [`HZ_192K`](Self::HZ_192K): one tick per sample at each rate the audio
+///   codecs declare.
+/// - **Frame intervals** — eight, the reciprocals of [`Rate`]'s eight frame
+///   rates entry for entry. An `NTSC_` prefix marks the three carrying NTSC's
+///   1001 pulldown ([`NTSC_FILM`](Self::NTSC_FILM),
+///   [`NTSC_VIDEO`](Self::NTSC_VIDEO), [`NTSC_60`](Self::NTSC_60)); the other
+///   five are exact, and are named for the convention that declares them
+///   ([`FILM_24`](Self::FILM_24), [`PAL_25`](Self::PAL_25),
+///   [`VIDEO_30`](Self::VIDEO_30) and so on).
 ///
 /// Every one of them is a **timebase**: seconds per tick. The frame-rate
 /// entries are therefore the *reciprocals* of the rate they are named for —
 /// [`FILM_24`](Self::FILM_24) is `1/24`, not `24/1` — because a PTS timebase
-/// and a frame rate are reciprocal readings of the same rational, as
-/// [`Self::frames_to_duration`] describes. [`Self::checked_recip`] converts
-/// between the two readings.
+/// and a frame rate are reciprocal readings of one rational. [`Rate`] is the
+/// other reading, with its own roster over the reciprocal values, and
+/// [`Self::checked_recip`] is the conversion under both of them.
+///
+/// ## What earns a name
+///
+/// A name is worth carrying where every file that declares the value means
+/// the same thing by it, so the roster holds the values a *convention* travels
+/// with: a codec's sample rate, a region's frame rate, a container's fixed
+/// clock. Matroska's default `TimecodeScale` and FLV's timestamps are both
+/// millisecond counts, so both read as [`MILLIS`](Self::MILLIS) — one value,
+/// one name, and no container-specific alias standing beside it. An MP4/MOV
+/// timescale is chosen per file by the muxer, so it carries no convention to
+/// name and this type carries it as the rational it is.
 #[derive(Debug, Clone, Copy, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
@@ -147,8 +175,8 @@ impl Timebase {
   pub const SECONDS: Self = Self::new(1, nz(1));
 
   /// Millisecond ticks — Matroska's default `TimecodeScale` (1 000 000 ns),
-  /// WebVTT and SRT cue times, and the unit most application-level media APIs
-  /// report positions in.
+  /// FLV's timestamps, WebVTT and SRT cue times, and the unit most
+  /// application-level media APIs report positions in.
   pub const MILLIS: Self = Self::new(1, nz(1_000));
 
   /// Microsecond ticks — FFmpeg's `AV_TIME_BASE`, which is the unit
@@ -165,13 +193,64 @@ impl Timebase {
   /// RTP's video clock rate all use it.
   pub const MPEG_90K: Self = Self::new(1, nz(90_000));
 
-  /// One tick per audio sample at 48 kHz — DVD and broadcast audio,
-  /// professional interchange, and Opus, whose clock rate is always 48 kHz.
-  pub const HZ_48K: Self = Self::new(1, nz(48_000));
+  /// One tick per audio sample at 8 kHz — narrowband telephony: G.711 and
+  /// AMR-NB, and the clock rate RTP fixes the PCM payload types at.
+  pub const HZ_8K: Self = Self::new(1, nz(8_000));
+
+  /// One tick per audio sample at 11.025 kHz — a quarter of the CD rate,
+  /// which is how legacy WAV and MPEG-2.5 Layer III reach a low rate without
+  /// leaving the 44.1 kHz family.
+  pub const HZ_11_025K: Self = Self::new(1, nz(11_025));
+
+  /// One tick per audio sample at 12 kHz — a quarter of 48 kHz, and the
+  /// bottom of that family in MPEG-2.5 Layer III and MPEG-4 AAC.
+  pub const HZ_12K: Self = Self::new(1, nz(12_000));
+
+  /// One tick per audio sample at 16 kHz — wideband speech: AMR-WB, Opus's
+  /// wideband mode, and the rate most speech models take their input at.
+  pub const HZ_16K: Self = Self::new(1, nz(16_000));
+
+  /// One tick per audio sample at 22.05 kHz — half the CD rate, carried by
+  /// legacy WAV and by MPEG-2's low-sampling-frequency Layer III.
+  pub const HZ_22_05K: Self = Self::new(1, nz(22_050));
+
+  /// One tick per audio sample at 24 kHz — half of 48 kHz: MPEG-2's
+  /// low-sampling-frequency extension, and what a low-bitrate AAC or Vorbis
+  /// stream commonly decodes to.
+  pub const HZ_24K: Self = Self::new(1, nz(24_000));
+
+  /// One tick per audio sample at 32 kHz — MPEG-1 audio's third rate, and the
+  /// one NICAM television sound carries.
+  pub const HZ_32K: Self = Self::new(1, nz(32_000));
 
   /// One tick per audio sample at 44.1 kHz — CD-DA's rate, and the one most
   /// MP3 and AAC music files carry.
   pub const HZ_44_1K: Self = Self::new(1, nz(44_100));
+
+  /// One tick per audio sample at 48 kHz — DVD and broadcast audio,
+  /// professional interchange, and Opus, whose clock rate is always 48 kHz.
+  pub const HZ_48K: Self = Self::new(1, nz(48_000));
+
+  /// One tick per audio sample at 64 kHz — the step between 48 kHz and the
+  /// doubled rates, declared by MPEG-4 AAC's sample-frequency table.
+  pub const HZ_64K: Self = Self::new(1, nz(64_000));
+
+  /// One tick per audio sample at 88.2 kHz — double the CD rate, so a
+  /// high-resolution master stays in the 44.1 kHz family and a downconvert to
+  /// CD is an exact halving.
+  pub const HZ_88_2K: Self = Self::new(1, nz(88_200));
+
+  /// One tick per audio sample at 96 kHz — double 48 kHz: DVD-Audio, Blu-ray,
+  /// and the rate professional recording works at above a 48 kHz delivery.
+  pub const HZ_96K: Self = Self::new(1, nz(96_000));
+
+  /// One tick per audio sample at 176.4 kHz — quadruple the CD rate, the top
+  /// of the 44.1 kHz family in high-resolution PCM.
+  pub const HZ_176_4K: Self = Self::new(1, nz(176_400));
+
+  /// One tick per audio sample at 192 kHz — quadruple 48 kHz, and the highest
+  /// PCM rate Blu-ray and professional audio interfaces carry.
+  pub const HZ_192K: Self = Self::new(1, nz(192_000));
 
   /// One tick per frame at 24000/1001 fps (`23.976`) — film pulled down for
   /// NTSC, which is what most film-sourced MP4 and MOV files declare.
@@ -179,13 +258,6 @@ impl Timebase {
   /// The reciprocal of the frame rate, per the [roster's
   /// note](Self#the-well-known-roster).
   pub const NTSC_FILM: Self = Self::new(1_001, nz(24_000));
-
-  /// One tick per frame at 30000/1001 fps (`29.97`) — NTSC video, and the
-  /// rate broadcast-sourced material in North America and Japan carries.
-  ///
-  /// The reciprocal of the frame rate, per the [roster's
-  /// note](Self#the-well-known-roster).
-  pub const NTSC_VIDEO: Self = Self::new(1_001, nz(30_000));
 
   /// One tick per frame at exactly 24 fps — cinema's rate, and what a DCP
   /// counts in.
@@ -200,6 +272,44 @@ impl Timebase {
   /// The reciprocal of the frame rate, per the [roster's
   /// note](Self#the-well-known-roster).
   pub const PAL_25: Self = Self::new(1, nz(25));
+
+  /// One tick per frame at 30000/1001 fps (`29.97`) — NTSC video, and the
+  /// rate broadcast-sourced material in North America and Japan carries.
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const NTSC_VIDEO: Self = Self::new(1_001, nz(30_000));
+
+  /// One tick per frame at exactly 30 fps — digital capture that skips the
+  /// NTSC pulldown, and what most screen recordings declare. The
+  /// pulldown-free twin of [`NTSC_VIDEO`](Self::NTSC_VIDEO).
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const VIDEO_30: Self = Self::new(1, nz(30));
+
+  /// One tick per frame at exactly 50 fps — PAL-region broadcast at double
+  /// rate, which is what 1080p50 and most European sports feeds carry.
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const PAL_50: Self = Self::new(1, nz(50));
+
+  /// One tick per frame at 60000/1001 fps (`59.94`) — NTSC-region broadcast
+  /// at double rate, and what 1080p59.94 cameras record. The `NTSC_` prefix
+  /// is the pulldown, as it is on [`NTSC_VIDEO`](Self::NTSC_VIDEO); exactly
+  /// sixty is [`VIDEO_60`](Self::VIDEO_60).
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const NTSC_60: Self = Self::new(1_001, nz(60_000));
+
+  /// One tick per frame at exactly 60 fps — high-frame-rate capture and game
+  /// recordings, the pulldown-free twin of [`NTSC_60`](Self::NTSC_60).
+  ///
+  /// The reciprocal of the frame rate, per the [roster's
+  /// note](Self#the-well-known-roster).
+  pub const VIDEO_60: Self = Self::new(1, nz(60));
 
   /// Creates a new `Timebase` with the given numerator and denominator.
   ///
@@ -227,22 +337,26 @@ impl Timebase {
     }
   }
 
-  /// Looks up a [well-known timebase](Self#the-well-known-roster) by the exact
-  /// name of its constant — `"MILLIS"`, `"MPEG_90K"`, `"NTSC_VIDEO"`.
+  /// Looks up a [well-known timebase](Self#the-well-known-roster) by the name
+  /// of its constant — `"MPEG_90K"`, `"mpeg_90k"`, `"Mpeg_90k"`.
   ///
-  /// The match is exact and case-sensitive: the names are the constants'
-  /// own `SCREAMING_SNAKE_CASE` spellings, so a name that round-trips through
-  /// [`Self::well_known_name`] is the one a reader can grep for in this file.
+  /// Name lookup is **ASCII-case-insensitive**, and case is the whole of the
+  /// folding: the name is otherwise the constant's own `SCREAMING_SNAKE_CASE`
+  /// spelling, with no alias and no trimming, so a name written in a config
+  /// file is greppable in this one. The canonical spelling is the one
+  /// [`Self::well_known_name`] writes back.
+  ///
   /// `None` for anything else — including a `num/den` rendering, which
   /// [`FromStr`](core::str::FromStr) accepts on its other arm.
   pub fn from_name(name: &str) -> Option<Self> {
     WELL_KNOWN
       .iter()
-      .find_map(|(known, timebase)| (*known == name).then_some(*timebase))
+      .find_map(|(known, timebase)| known.eq_ignore_ascii_case(name).then_some(*timebase))
   }
 
-  /// The name of the [well-known timebase](Self#the-well-known-roster) this
-  /// one *equals*, if any — the inverse of [`Self::from_name`].
+  /// The canonical name of the [well-known
+  /// timebase](Self#the-well-known-roster) this one *equals*, if any — the
+  /// inverse of [`Self::from_name`], and the spelling to write back out.
   ///
   /// Matched **by value**, as [`PartialEq`] matches: `2/2000` is
   /// [`MILLIS`](Self::MILLIS) and answers to that name, even though
@@ -347,14 +461,28 @@ impl Timebase {
     gcd_u32(self.num.unsigned_abs(), self.den.get().unsigned_abs()) == 1
   }
 
+  /// Whether two timebases are the same rational *as written*: `1/1000` and
+  /// `2/2000` are equal but not identical.
+  ///
+  /// The distinction `==` deliberately erases is the one a fast path needs.
+  /// Rescaling between equal timebases is exact either way, but between
+  /// identical ones it is the identity, so a count crosses unchanged — which
+  /// is what keeps same-timebase arithmetic exact where a rescale would round,
+  /// and total where a rescale would refuse a degenerate target.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  const fn is_identical(&self, other: &Self) -> bool {
+    self.num == other.num && self.den.get() == other.den.get()
+  }
+
   /// The reciprocal — `1/24` becomes `24/1` — or `None` when the numerator is
   /// zero and no reciprocal exists.
   ///
-  /// This is the conversion between the two readings of a `Timebase`: a PTS
-  /// timebase (seconds per tick) and a frame rate (frames per second) are
+  /// This is the conversion between the two readings of a rational: a PTS
+  /// timebase (seconds per tick) and a rate (events per second) are
   /// reciprocals, which is why the [roster](Self#the-well-known-roster) spells
-  /// [`FILM_24`](Self::FILM_24) as `1/24` and
-  /// [`Self::frames_to_duration`] wants `24/1`.
+  /// [`FILM_24`](Self::FILM_24) as `1/24` while [`Rate::FPS_24`] is `24/1`.
+  /// [`Rate::from_timebase`] and [`Rate::to_timebase`] are this method under
+  /// the names the reading is asked for by.
   ///
   /// A zero numerator is the only failure: the swap is otherwise total,
   /// because the constructor's `den > 0` becomes the new numerator's
@@ -431,37 +559,6 @@ impl Timebase {
     }
   }
 
-  /// Treats `self` as a frame rate (frames per second) and returns the
-  /// [`Duration`] corresponding to `frames` frames.
-  ///
-  /// Examples:
-  /// - 30 fps: `Timebase::new(30, nz(1)).frames_to_duration(15)` → 500 ms
-  /// - NTSC: `Timebase::new(30000, nz(1001)).frames_to_duration(30000)` → 1001 ms
-  ///
-  /// Note that "frame rate" and "PTS timebase" are conceptually *different*
-  /// rationals even though both are represented as [`Timebase`]. A 30 fps
-  /// stream typically has PTS timebase `1/30` (seconds per unit) and frame
-  /// rate `30/1` (frames per second) — they are reciprocals.
-  ///
-  /// # Panics
-  ///
-  /// Panics if `self.num() == 0` (division by zero).
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  pub const fn frames_to_duration(&self, frames: u32) -> Duration {
-    // frames / (num/den) seconds = frames * den / num seconds
-    //
-    // `as u128` widens rather than sign-extends only because the constructor
-    // guarantees `num >= 0` and `den > 0`; a negative operand here would
-    // become an enormous positive one.
-    let num = self.num as u128;
-    let den = self.den.get() as u128;
-    assert!(num != 0, "frame rate numerator must be non-zero");
-    let total_ns = (frames as u128) * den * NANOS_PER_SEC / num;
-    let secs = (total_ns / NANOS_PER_SEC) as u64;
-    let nanos = (total_ns % NANOS_PER_SEC) as u32;
-    Duration::new(secs, nanos)
-  }
-
   /// Converts a [`Duration`] into the number of ticks of this timebase that
   /// span it, or `None` if that count is not an `i64`.
   ///
@@ -477,10 +574,9 @@ impl Timebase {
   /// - a `self.num() == 0` degenerate timebase, whose every tick lands on the
   ///   same instant, so no count of them spans a non-zero duration.
   ///
-  /// The second is why this rung exists: [`Self::saturating_duration_to_pts`]
-  /// answers `0` there, which is right only for [`Duration::ZERO`], and a
-  /// caller building a `checked_` operation on top of a conversion that had
-  /// already given up would report an exact answer it does not have.
+  /// The second is where this rung earns its keep: it is the only spelling of
+  /// the conversion that answers at all on a degenerate timebase, its twin
+  /// [`Self::saturating_duration_to_pts`] panicking there.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn checked_duration_to_pts(&self, d: Duration) -> Option<i64> {
     if self.num == 0 {
@@ -501,16 +597,17 @@ impl Timebase {
   /// arithmetic, same rounding, and a count too large for an `i64` comes back
   /// as `i64::MAX`.
   ///
-  /// A degenerate `self.num() == 0` timebase answers `0` — not a saturation
-  /// but the identity, which is what makes
-  /// [`Timestamp::saturating_add_duration`] a no-op there rather than a panic.
-  /// It is the honest answer only for [`Duration::ZERO`]; use
-  /// [`Self::checked_duration_to_pts`] when the difference matters.
+  /// # Panics
+  ///
+  /// Panics if `self.num() == 0`, the divide-by-zero a degenerate timebase
+  /// would be — the same posture [`Self::saturating_rescale`] takes toward the
+  /// same degeneracy, and for the reason [`i64::saturating_div`] panics on a
+  /// zero divisor: saturation answers *overflow*, and a timebase whose every
+  /// tick lands on one instant leaves no count to clamp. Use
+  /// [`Self::checked_duration_to_pts`] where the timebase may be degenerate.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn saturating_duration_to_pts(&self, d: Duration) -> i64 {
-    if self.num == 0 {
-      return 0;
-    }
+    assert!(self.num != 0, "target timebase numerator must be non-zero");
     let ticks = self.duration_ticks(d);
     if ticks > i64::MAX as u128 {
       i64::MAX
@@ -671,7 +768,16 @@ impl fmt::Display for Timebase {
 /// instant `(pts · num, den)`, so equal timestamps hash the same.
 ///
 /// Cross-timebase comparisons use 128-bit cross-multiplication — no division,
-/// no rounding error. Same-timebase comparisons take a fast path on `pts`.
+/// no rounding error. Same-timebase comparisons take a fast path on `pts`,
+/// except under a degenerate `0/den` timebase, where every PTS names instant
+/// zero and the counts therefore say nothing about the instants: those fall
+/// back to the cross-multiply, and all of them compare equal.
+///
+/// This type is the one of the three that **has an [`Ord`]**, and it is
+/// [`Self::cmp_semantic`] — instants are totally ordered by *when* they are,
+/// which is the only reading of "before" a timestamp has, so there is nothing
+/// for a derived order to disagree with. [`SignedDuration`] and [`TimeRange`]
+/// each have a second reading and therefore no `Ord` at all.
 #[derive(Debug, Default, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
@@ -745,6 +851,12 @@ impl Timestamp {
   /// Useful for "virtual past" seeding: e.g., initializing a warmup-filter
   /// state to `ts - min_duration` so the first detected cut can fire
   /// immediately.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `self.timebase().num() == 0`, as
+  /// [`Timebase::saturating_duration_to_pts`] does: a degenerate timebase
+  /// spans no time per tick, so no tick count stands for `d`.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn saturating_sub_duration(self, d: Duration) -> Self {
     let units = self.timebase.saturating_duration_to_pts(d);
@@ -764,42 +876,154 @@ impl Timestamp {
   /// enormous for this timebase, so a saturated answer can mean either "the
   /// duration did not fit" or "the sum did not". Both say the same thing about
   /// the instant — it is past the end of what an `i64` PTS can name.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `self.timebase().num() == 0`, as
+  /// [`Timebase::saturating_duration_to_pts`] does: a degenerate timebase
+  /// spans no time per tick, so no tick count stands for `d`.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn saturating_add_duration(self, d: Duration) -> Self {
     let units = self.timebase.saturating_duration_to_pts(d);
     Self::new(self.pts.saturating_add(units), self.timebase)
   }
 
+  /// The span from `other` to `self`, counted in `self`'s timebase — negative
+  /// when `other` is the later instant.
+  ///
+  /// Point minus point is a vector, which is why this is the subtraction two
+  /// timestamps have and addition is not: an instant plus an instant names
+  /// nothing. [`Self::duration_since`] is the same difference through the
+  /// unsigned [`Duration`], and refuses the direction this one reports.
+  ///
+  /// Saturating in both steps: an `other` in a different timebase is rescaled
+  /// into `self`'s first, to the nearest tick, and the difference clamps at
+  /// `i64::MIN`/`i64::MAX` rather than wrapping.
+  /// [`Self::checked_signed_duration_since`] is the rung that refuses instead
+  /// of clamping.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the timebases differ and `self`'s is degenerate, as
+  /// [`Timebase::saturating_rescale`] does. Two instants counted in the same
+  /// degenerate timebase are subtracted without a rescale, and without a
+  /// panic.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn signed_duration_since(&self, other: &Self) -> SignedDuration {
+    let earlier = saturating_recount(other.pts, other.timebase, self.timebase);
+    SignedDuration::new(self.pts.saturating_sub(earlier), self.timebase)
+  }
+
+  /// The span from `other` to `self` in `self`'s timebase, or `None` if it is
+  /// not an exact `i64` count of its ticks.
+  ///
+  /// The checked rung of [`Self::signed_duration_since`]: `None` where that
+  /// one clamps or panics — `other` outside what `self`'s timebase can count,
+  /// a difference outside `i64`, or a degenerate `self` timebase with a
+  /// differing `other`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_signed_duration_since(&self, other: &Self) -> Option<SignedDuration> {
+    match checked_recount(other.pts, other.timebase, self.timebase) {
+      Some(earlier) => match self.pts.checked_sub(earlier) {
+        Some(ticks) => Some(SignedDuration::new(ticks, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// This instant shifted forward by the signed span `d`, or `None` if the
+  /// result is not an `i64` PTS in this timebase.
+  ///
+  /// A `d` counted in another timebase is rescaled into this one first, so
+  /// `None` also covers a span this timebase cannot count and a degenerate
+  /// timebase that can count none. Shifting *backward* is
+  /// [`Self::checked_sub_signed`] rather than a negated `d`, which
+  /// `i64::MIN` ticks has no room for.
+  ///
+  /// Named as [`u64::checked_add_signed`] is, and for the same reason: the
+  /// operand is a signed offset, the receiver is not one.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_add_signed(self, d: SignedDuration) -> Option<Self> {
+    match checked_recount(d.ticks, d.timebase, self.timebase) {
+      Some(ticks) => match self.pts.checked_add(ticks) {
+        Some(pts) => Some(Self::new(pts, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// This instant shifted forward by `d`, clamping at `i64::MIN`/`i64::MAX`
+  /// instead of overflowing — the saturating rung of
+  /// [`Self::checked_add_signed`], saturating in the rescale of `d` as well as
+  /// in the addition.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `d` is counted in a different timebase and this one is
+  /// degenerate, as [`Timebase::saturating_rescale`] does.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_add_signed(self, d: SignedDuration) -> Self {
+    let ticks = saturating_recount(d.ticks, d.timebase, self.timebase);
+    Self::new(self.pts.saturating_add(ticks), self.timebase)
+  }
+
+  /// This instant shifted backward by the signed span `d`, or `None` if the
+  /// result is not an `i64` PTS in this timebase.
+  ///
+  /// The mirror of [`Self::checked_add_signed`], and not a negation of `d`:
+  /// the most negative count has no positive twin, so subtracting it is
+  /// reachable where negating it is not.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_sub_signed(self, d: SignedDuration) -> Option<Self> {
+    match checked_recount(d.ticks, d.timebase, self.timebase) {
+      Some(ticks) => match self.pts.checked_sub(ticks) {
+        Some(pts) => Some(Self::new(pts, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// This instant shifted backward by `d`, clamping at `i64::MIN`/`i64::MAX`
+  /// instead of overflowing — the saturating rung of
+  /// [`Self::checked_sub_signed`].
+  ///
+  /// # Panics
+  ///
+  /// Panics if `d` is counted in a different timebase and this one is
+  /// degenerate, as [`Timebase::saturating_rescale`] does.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_sub_signed(self, d: SignedDuration) -> Self {
+    let ticks = saturating_recount(d.ticks, d.timebase, self.timebase);
+    Self::new(self.pts.saturating_sub(ticks), self.timebase)
+  }
+
   /// `const fn` form of [`Ord::cmp`]. Compares two timestamps by the instant
   /// they represent, rescaling if timebases differ.
   ///
   /// Uses a 128-bit cross-multiply for the mixed-timebase case; no division,
-  /// so no rounding error. Same-timebase comparisons take a direct fast path.
+  /// so no rounding error. Same-timebase comparisons take a direct fast path,
+  /// the degenerate timebase excepted — see the guard at the site.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub const fn cmp_semantic(&self, other: &Self) -> Ordering {
-    if self.timebase.num == other.timebase.num
-      && self.timebase.den.get() == other.timebase.den.get()
-    {
-      return if self.pts < other.pts {
-        Ordering::Less
-      } else if self.pts > other.pts {
-        Ordering::Greater
-      } else {
-        Ordering::Equal
-      };
+    // The identical-timebase fast path is sound only where a tick spans time.
+    // Under a degenerate `0/den` every PTS names instant zero, so comparing
+    // the counts would report an order the instants do not have — and would
+    // disagree with the cross-multiply's `Equal` against a *differently
+    // written* degenerate timebase, which is how an intransitive `==` is
+    // built. Measured before the guard existed: `1 @ 0/3` equalled `1 @ 0/5`
+    // and `2 @ 0/3` equalled it too, while the first two compared unequal.
+    if self.timebase.is_identical(&other.timebase) && self.timebase.num != 0 {
+      return cmp_i128(self.pts as i128, other.pts as i128);
     }
     // self.pts * self.num / self.den  vs  other.pts * other.num / other.den
     //   ⇔ self.pts * self.num * other.den  vs  other.pts * other.num * self.den
     let lhs = (self.pts as i128) * (self.timebase.num as i128) * (other.timebase.den.get() as i128);
     let rhs =
       (other.pts as i128) * (other.timebase.num as i128) * (self.timebase.den.get() as i128);
-    if lhs < rhs {
-      Ordering::Less
-    } else if lhs > rhs {
-      Ordering::Greater
-    } else {
-      Ordering::Equal
-    }
+    cmp_i128(lhs, rhs)
   }
 
   /// Returns the [`Duration`] from PTS zero (in this timebase) to `self`, or
@@ -877,6 +1101,9 @@ impl Hash for Timestamp {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn hash<H: Hasher>(&self, state: &mut H) {
     // Canonical representation: instant as reduced rational (pts * num, den).
+    // A degenerate `0/den` reduces to `(0, 1)` whatever the PTS, which is the
+    // same collapse `cmp_semantic`'s degeneracy guard makes — the two agree
+    // there because both read the instant rather than the count.
     let n: i128 = (self.pts as i128) * (self.timebase.num as i128);
     // Exact widening: the constructor guarantees `den > 0`.
     let d: u128 = self.timebase.den.get().unsigned_abs() as u128;
@@ -946,6 +1173,309 @@ impl fmt::Display for Timestamp {
   }
 }
 
+/// A signed span of time, counted in ticks of an associated [`Timebase`] — the
+/// vector to [`Timestamp`]'s point.
+///
+/// [`Duration`] cannot hold one: it is unsigned, and the difference of two
+/// instants is not. A pre-roll offset, an A/V sync correction, an edit-list
+/// shift and the gap between two PTS values are all signed spans, and this is
+/// the type they land in — [`Timestamp::signed_duration_since`] returns one and
+/// [`Timestamp::checked_add_signed`] consumes one.
+///
+/// # Counted, not measured
+///
+/// `SignedDuration::new(-90_000, Timebase::MPEG_90K)` is one second backwards
+/// on an MPEG clock. The sign lives on the count, never on the timebase, whose
+/// `num >= 0` invariant is untouched: a backward span is a negative count of
+/// forward ticks.
+///
+/// # Equality and ordering
+///
+/// Equality is derived, and so **structural**: the tick count is compared as
+/// written, and only the timebase is compared by value, as [`Timebase`]'s own
+/// `==` does. `1000 @ 1/1000` therefore equals `1000 @ 2/2000` but not
+/// `1 @ 1/1`, though both measure one second. [`Hash`] agrees with that
+/// equality.
+///
+/// There is **no [`Ord`]**, which is the posture [`TimeRange`] takes too and
+/// [`Timestamp`] does not; each of the three says why in its own section. A
+/// derived order would be that same structural comparison, count first, and
+/// would put
+/// the *longer* of two spans below the shorter one whenever they are counted
+/// in different timebases; the semantic order cannot be `Ord` either, because
+/// it disagrees with the structural `==` these spans are hashed by. So the
+/// order is asked for by name:
+///
+/// ```
+/// use mediatime::{SignedDuration, Timebase};
+///
+/// let a = SignedDuration::new(1, Timebase::SECONDS);
+/// let b = SignedDuration::new(1_000, Timebase::MILLIS);
+/// assert_ne!(a, b); // different counts
+/// assert!(a.cmp_semantic(&b).is_eq()); // the same second
+///
+/// let mut spans = [SignedDuration::new(2, Timebase::SECONDS), a, b];
+/// spans.sort_by(SignedDuration::cmp_semantic); // by length: 1s, 1000ms, 2s
+/// assert_eq!(spans[2].ticks(), 2);
+/// ```
+///
+/// `spans.sort()` does not compile, and that is the point of the section:
+///
+/// ```compile_fail,E0277
+/// use mediatime::{SignedDuration, Timebase};
+///
+/// let mut spans = [SignedDuration::new(1, Timebase::SECONDS)];
+/// spans.sort(); // the trait bound `SignedDuration: Ord` is not satisfied
+/// ```
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(
+  feature = "quickcheck",
+  derive(::quickcheck_richderive::Arbitrary),
+  quickcheck(arbitrary = "crate::quickcheck_impls::signed_duration")
+)]
+pub struct SignedDuration {
+  ticks: i64,
+  timebase: Timebase,
+}
+
+impl SignedDuration {
+  /// Creates a span of `ticks` ticks of `timebase`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn new(ticks: i64, timebase: Timebase) -> Self {
+    Self { ticks, timebase }
+  }
+
+  /// Returns the tick count, in units of [`Self::timebase`] — negative when
+  /// the span points backwards.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn ticks(&self) -> i64 {
+    self.ticks
+  }
+
+  /// Returns the timebase the span is counted in.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn timebase(&self) -> Timebase {
+    self.timebase
+  }
+
+  /// Whether the span points backwards, as [`i64::is_negative`] asks of the
+  /// count itself.
+  ///
+  /// All three predicates ask about the *count*. They say the same thing about
+  /// the measured span under every timebase but the degenerate `0/den`, where
+  /// every count measures zero seconds and only [`Self::is_zero`] agrees.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn is_negative(&self) -> bool {
+    self.ticks < 0
+  }
+
+  /// Whether the span points forwards — `ticks() > 0`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn is_positive(&self) -> bool {
+    self.ticks > 0
+  }
+
+  /// Whether the span counts no ticks at all — `ticks() == 0`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn is_zero(&self) -> bool {
+    self.ticks == 0
+  }
+
+  /// The same span pointing the other way, or `None` for the one span that
+  /// has no opposite: `i64::MIN` ticks, whose magnitude is not an `i64`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_neg(self) -> Option<Self> {
+    match self.ticks.checked_neg() {
+      Some(ticks) => Some(Self::new(ticks, self.timebase)),
+      None => None,
+    }
+  }
+
+  /// The same span pointing the other way, clamping `i64::MIN` ticks to
+  /// `i64::MAX` — the saturating rung of [`Self::checked_neg`].
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_neg(self) -> Self {
+    Self::new(self.ticks.saturating_neg(), self.timebase)
+  }
+
+  /// How long the span is with its direction dropped, or `None` at `i64::MIN`
+  /// ticks — the one count whose magnitude is not an `i64`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_abs(self) -> Option<Self> {
+    match self.ticks.checked_abs() {
+      Some(ticks) => Some(Self::new(ticks, self.timebase)),
+      None => None,
+    }
+  }
+
+  /// How long the span is with its direction dropped, clamping `i64::MIN`
+  /// ticks to `i64::MAX` — the saturating rung of [`Self::checked_abs`].
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_abs(self) -> Self {
+    Self::new(self.ticks.saturating_abs(), self.timebase)
+  }
+
+  /// The sum of two spans, counted in **`self`'s** timebase, or `None` if
+  /// that count is not an `i64`.
+  ///
+  /// The left operand names the timebase of the answer, so `a.checked_add(b)`
+  /// and `b.checked_add(a)` name the same span at different resolutions. Two
+  /// spans in one timebase add exactly; otherwise `rhs` is rescaled into
+  /// `self`'s timebase first, to the nearest tick (see
+  /// [`Timebase::checked_rescale`]), so a coarse left operand rounds a finer
+  /// right one.
+  ///
+  /// `None` covers three refusals: `rhs` outside what `self`'s timebase can
+  /// count, a sum outside `i64`, and a degenerate `self` timebase, which no
+  /// rescale can land in. The last does not arise when both operands are
+  /// counted in the *same* degenerate timebase — no conversion runs there, and
+  /// tick plus tick is still exact.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_add(self, rhs: Self) -> Option<Self> {
+    match checked_recount(rhs.ticks, rhs.timebase, self.timebase) {
+      Some(ticks) => match self.ticks.checked_add(ticks) {
+        Some(sum) => Some(Self::new(sum, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// The sum of two spans in `self`'s timebase, clamping at
+  /// `i64::MIN`/`i64::MAX` instead of overflowing — the saturating rung of
+  /// [`Self::checked_add`], saturating in the rescale of `rhs` as well as in
+  /// the addition.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the timebases differ and `self`'s is degenerate, as
+  /// [`Timebase::saturating_rescale`] does. Two spans counted in the same
+  /// degenerate timebase add without a rescale, and without a panic.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_add(self, rhs: Self) -> Self {
+    let ticks = saturating_recount(rhs.ticks, rhs.timebase, self.timebase);
+    Self::new(self.ticks.saturating_add(ticks), self.timebase)
+  }
+
+  /// The difference of two spans, counted in **`self`'s** timebase, or `None`
+  /// if that count is not an `i64`.
+  ///
+  /// The mirror of [`Self::checked_add`], with the same three refusals — and
+  /// not an addition of a negated `rhs`, which `i64::MIN` ticks has no room
+  /// for.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_sub(self, rhs: Self) -> Option<Self> {
+    match checked_recount(rhs.ticks, rhs.timebase, self.timebase) {
+      Some(ticks) => match self.ticks.checked_sub(ticks) {
+        Some(difference) => Some(Self::new(difference, self.timebase)),
+        None => None,
+      },
+      None => None,
+    }
+  }
+
+  /// The difference of two spans in `self`'s timebase, clamping at
+  /// `i64::MIN`/`i64::MAX` instead of overflowing — the saturating rung of
+  /// [`Self::checked_sub`].
+  ///
+  /// # Panics
+  ///
+  /// Panics if the timebases differ and `self`'s is degenerate, as
+  /// [`Timebase::saturating_rescale`] does.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_sub(self, rhs: Self) -> Self {
+    let ticks = saturating_recount(rhs.ticks, rhs.timebase, self.timebase);
+    Self::new(self.ticks.saturating_sub(ticks), self.timebase)
+  }
+
+  /// Returns the same span counted in a different timebase.
+  ///
+  /// Converts through [`Timebase::saturating_rescale`], so the new count is
+  /// the nearest whole tick of `target` (halfway cases away from zero);
+  /// round-tripping through a coarser timebase can still lose precision.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `target.num() == 0`, as [`Timestamp::rescale_to`] does: a
+  /// degenerate timebase spans no time per tick, so no count of them measures
+  /// this span.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn rescale_to(self, target: Timebase) -> Self {
+    Self {
+      ticks: self.timebase.saturating_rescale(self.ticks, target),
+      timebase: target,
+    }
+  }
+
+  /// Returns the same span counted in `target`, or `None` where
+  /// [`Self::rescale_to`] would clamp or panic — the checked rung.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_rescale_to(self, target: Timebase) -> Option<Self> {
+    match self.timebase.checked_rescale(self.ticks, target) {
+      Some(ticks) => Some(Self {
+        ticks,
+        timebase: target,
+      }),
+      None => None,
+    }
+  }
+
+  /// Compares two spans by the time they measure, rescaling if the timebases
+  /// differ — the order this type deliberately has no [`Ord`] for, to be
+  /// passed by name: `spans.sort_by(SignedDuration::cmp_semantic)`.
+  ///
+  /// Uses a 128-bit cross-multiply for the mixed-timebase case: no division,
+  /// so no rounding error, and a negative count needs no special handling.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn cmp_semantic(&self, other: &Self) -> Ordering {
+    // The identical-timebase fast path is sound only where a tick spans time.
+    // Under a degenerate `0/den` every count measures zero, so comparing the
+    // counts would report an order the spans do not have — and would disagree
+    // with the cross-multiply's `Equal` against a *differently written*
+    // degenerate timebase, which is how an intransitive `==` is built.
+    if self.timebase.is_identical(&other.timebase) && self.timebase.num != 0 {
+      return cmp_i128(self.ticks as i128, other.ticks as i128);
+    }
+    // self.ticks * self.num / self.den  vs  other.ticks * other.num / other.den
+    //   ⇔ self.ticks * self.num * other.den  vs  other.ticks * other.num * self.den
+    let lhs =
+      (self.ticks as i128) * (self.timebase.num as i128) * (other.timebase.den.get() as i128);
+    let rhs =
+      (other.ticks as i128) * (other.timebase.num as i128) * (self.timebase.den.get() as i128);
+    cmp_i128(lhs, rhs)
+  }
+}
+
+/// Writes the count beside its timebase as `-1500 @ 1/1000` — the exact form,
+/// and the only one this type has.
+///
+/// It is [`Timestamp`]'s `{:#}` notation over a count instead of an instant,
+/// so `{:#}` renders identically here: a count and a timebase are the whole
+/// value, and there is nothing to expand into. The sign leads the whole
+/// rendering because the sign lives on the count; a timebase never carries
+/// one.
+///
+/// There is deliberately **no clock form**. `H:MM:SS.mmm` truncates to the
+/// millisecond and names no timebase, which is a loss an instant in a log line
+/// can afford and an inverse cannot: [`Timestamp`]'s clock has no `FromStr`
+/// for exactly that reason, and a span rendered that way would additionally
+/// lose the count it *is*. [`FromStr`](core::str::FromStr) inverts this
+/// rendering exactly.
+///
+/// One consequence: this rendering and [`Timestamp`]'s `{:#}` are the same
+/// shape, so `1500 @ 1/1000` alone does not say whether it is an instant or a
+/// span. A log line that prints one should say which it is printing.
+///
+/// Width and alignment flags (`{:>12}`) are ignored, as they are for every
+/// type here: honouring them means measuring the finished string, and this
+/// crate has no `alloc` to build one in.
+impl fmt::Display for SignedDuration {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{} @ {}", self.ticks, self.timebase)
+  }
+}
+
 /// A half-open time range `[start, end)` in a given [`Timebase`].
 ///
 /// Represents the extent of a detected event — for example, a fade-out →
@@ -955,6 +1485,21 @@ impl fmt::Display for Timestamp {
 /// Both endpoints share the same [`Timebase`]. To compare ranges across
 /// different timebases, rescale one of them first (e.g., by calling
 /// [`Timestamp::rescale_to`] on each endpoint).
+///
+/// # Equality and ordering
+///
+/// Equality is derived, and so **structural**: both counts are compared as
+/// written, and only the timebase is compared by value. `[1500, 3250) @ 1/1000`
+/// therefore equals the same pair over `2/2000` but not `[135_000, 292_500)`
+/// over `1/90000`, though they cover the same stretch of time. [`Hash`] agrees
+/// with that equality.
+///
+/// There is **no [`Ord`]**, the posture [`SignedDuration`] takes as well.
+/// Ranges have no single order to derive: by start, by end and by length are
+/// three different answers, and overlapping ranges are not ordered at all.
+/// Compare the part you mean — [`Self::start`] and [`Self::end`] hand back
+/// [`Timestamp`]s, which *are* ordered, and by the instant rather than by the
+/// count.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(
   feature = "serde",
@@ -1209,6 +1754,300 @@ impl fmt::Display for TimeRange {
   }
 }
 
+/// A rate — events per second — as a rational: `30000/1001` is NTSC video's
+/// 29.97 frames per second, `48000/1` an audio sample rate.
+///
+/// # The other reading of a [`Timebase`]
+///
+/// A rate and a PTS timebase are one rational read in opposite directions:
+/// seconds per tick one way, events per second the other. This type is the
+/// *rate* reading and stores the rate — `Rate::fps(30_000, nz(1001))` holds
+/// `30000/1001` — while [`Self::to_timebase`] hands back the `1001/30000` a
+/// PTS in that stream is counted in, and [`Self::from_timebase`] reads one
+/// back the other way.
+///
+/// Two readings in two types is what keeps a frame rate from reaching
+/// `av_rescale_q` as a timebase: the reciprocal is a conversion you ask for,
+/// not a mistake you make silently.
+///
+/// # What a rate knows
+///
+/// How long `n` events take — [`Self::checked_frames_to_duration`]. A timebase
+/// knows how long *one tick* is; how long *n frames* are is the rate's
+/// question, which is why that conversion lives here.
+///
+/// # Construction, equality and ordering
+///
+/// Construction routes through [`Timebase::new`] and inherits its invariants:
+/// non-negative numerator, positive denominator. A **zero numerator stays
+/// legal** — no events per second is a degenerate rate, comparable and
+/// storable, and the one input the reciprocal refuses.
+///
+/// Equality, ordering and [`Hash`] are the inner rational's, so they are
+/// value-based: `60000/2002` is `30000/1001`, and a greater rational is a
+/// faster rate. [`Default`] is the identity rational — one per second — as
+/// [`Timebase::default`] is.
+///
+/// # The well-known roster
+///
+/// [`FPS_23_976`](Self::FPS_23_976), [`FPS_29_97`](Self::FPS_29_97) and the
+/// rest are the frame rates containers declare, each with a name
+/// [`Self::from_name`] reads and [`Self::well_known_name`] writes back — the
+/// two-way table [`Timebase`] carries, over the reciprocal values.
+///
+/// The eight are mirrored on [`Timebase`]'s roster entry for entry: every rate
+/// here reciprocates onto a named timebase and back, so a rate a container
+/// declares can be said by name in either reading, and neither roster grows a
+/// frame rate without the other.
+///
+/// # On the wire
+///
+/// `serde(transparent)`: a rate is written as the rational it is, under
+/// [`Timebase`]'s own field names and through its own validators. Declared
+/// rather than left to the newtype default, because a newtype struct is a
+/// shape some formats render and others erase, and this one has no shape of
+/// its own to render.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(transparent))]
+#[cfg_attr(
+  feature = "quickcheck",
+  derive(::quickcheck_richderive::Arbitrary),
+  quickcheck(arbitrary = "crate::quickcheck_impls::rate")
+)]
+pub struct Rate(Timebase);
+
+impl Rate {
+  /// 24000/1001 events per second (`23.976`) — film pulled down for NTSC, the
+  /// rate most film-sourced MP4 and MOV files declare.
+  pub const FPS_23_976: Self = Self(Timebase::new(24_000, nz(1_001)));
+
+  /// Exactly 24 frames per second — cinema's rate, and what a DCP counts in.
+  pub const FPS_24: Self = Self(Timebase::new(24, nz(1)));
+
+  /// Exactly 25 frames per second — PAL and SECAM broadcast, and EBU
+  /// timecode.
+  pub const FPS_25: Self = Self(Timebase::new(25, nz(1)));
+
+  /// 30000/1001 events per second (`29.97`) — NTSC video, and the rate
+  /// broadcast-sourced material in North America and Japan carries.
+  pub const FPS_29_97: Self = Self(Timebase::new(30_000, nz(1_001)));
+
+  /// Exactly 30 frames per second — digital capture that skips the NTSC
+  /// pulldown, and most screen recordings.
+  pub const FPS_30: Self = Self(Timebase::new(30, nz(1)));
+
+  /// Exactly 50 frames per second — PAL-region broadcast at double rate,
+  /// which is what 1080p50 and most European sports feeds carry.
+  pub const FPS_50: Self = Self(Timebase::new(50, nz(1)));
+
+  /// 60000/1001 events per second (`59.94`) — NTSC-region broadcast at double
+  /// rate, and what 1080p59.94 cameras record.
+  pub const FPS_59_94: Self = Self(Timebase::new(60_000, nz(1_001)));
+
+  /// Exactly 60 frames per second — high-frame-rate capture and game
+  /// recordings, the pulldown-free twin of [`FPS_59_94`](Self::FPS_59_94).
+  pub const FPS_60: Self = Self(Timebase::new(60, nz(1)));
+
+  /// `n` events per second, as a whole number: `Rate::hz(48_000)` is an audio
+  /// sample rate, `Rate::hz(30)` exactly 30 fps.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `n < 0`, as [`Timebase::new`] does. Zero is the degenerate
+  /// rate, and is accepted.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn hz(n: i32) -> Self {
+    Self(Timebase::new(n, DEN_ONE))
+  }
+
+  /// Fallible variant of [`Self::hz`]: `None` instead of a panic when `n < 0`.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn try_hz(n: i32) -> Option<Self> {
+    match Timebase::try_new(n, DEN_ONE) {
+      Some(inner) => Some(Self(inner)),
+      None => None,
+    }
+  }
+
+  /// `num`/`den` events per second — the spelling the fractional broadcast
+  /// rates need: `Rate::fps(30_000, nz(1001))` is 29.97.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `num < 0` or `den <= 0`, as [`Timebase::new`] does.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn fps(num: i32, den: NonZeroI32) -> Self {
+    Self(Timebase::new(num, den))
+  }
+
+  /// Fallible variant of [`Self::fps`]: `None` instead of a panic.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn try_fps(num: i32, den: NonZeroI32) -> Option<Self> {
+    match Timebase::try_new(num, den) {
+      Some(inner) => Some(Self(inner)),
+      None => None,
+    }
+  }
+
+  /// Looks up a [well-known rate](Self#the-well-known-roster) by the name of
+  /// its constant — `"FPS_29_97"`, `"fps_29_97"`, `"Fps_29_97"`.
+  ///
+  /// Name lookup is **ASCII-case-insensitive**, and that is the whole of the
+  /// folding: the name is otherwise the constant's own, character for
+  /// character. The canonical spelling is the one
+  /// [`Self::well_known_name`] writes back.
+  pub fn from_name(name: &str) -> Option<Self> {
+    WELL_KNOWN_RATES
+      .iter()
+      .find_map(|(known, rate)| known.eq_ignore_ascii_case(name).then_some(*rate))
+  }
+
+  /// The canonical name of the [well-known rate](Self#the-well-known-roster)
+  /// this one *equals*, if any — the inverse of [`Self::from_name`], and the
+  /// spelling to write back out.
+  ///
+  /// Matched by value, as [`PartialEq`] matches: `60000/2002` is
+  /// [`FPS_29_97`](Self::FPS_29_97) and answers to that name. No two roster
+  /// entries are equal, so the answer is unambiguous.
+  pub fn well_known_name(&self) -> Option<&'static str> {
+    WELL_KNOWN_RATES
+      .iter()
+      .find_map(|(name, rate)| (rate == self).then_some(*name))
+  }
+
+  /// Returns the numerator — events per `den()` seconds.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn num(&self) -> i32 {
+    self.0.num()
+  }
+
+  /// Returns the denominator.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn den(&self) -> NonZeroI32 {
+    self.0.den()
+  }
+
+  /// The [`Timebase`] one event is counted in — the reciprocal rational, so
+  /// 29.97 fps (`30000/1001`) becomes `1001/30000` seconds per frame.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `self.num() == 0`: a rate of no events per second has no
+  /// reciprocal, an event that never happens having no duration between its
+  /// occurrences. Use [`Self::checked_to_timebase`] where the rate may be
+  /// degenerate.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn to_timebase(&self) -> Timebase {
+    match self.0.checked_recip() {
+      Some(timebase) => timebase,
+      None => panic!("rate numerator must be non-zero"),
+    }
+  }
+
+  /// The [`Timebase`] one event is counted in, or `None` for the degenerate
+  /// rate — the checked rung of [`Self::to_timebase`], and the only failure
+  /// the reciprocal has.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_to_timebase(&self) -> Option<Timebase> {
+    self.0.checked_recip()
+  }
+
+  /// Reads a [`Timebase`] as the rate it is the reciprocal of: `1/24` seconds
+  /// per frame becomes 24 frames per second.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `timebase.num() == 0`: a degenerate timebase names one instant,
+  /// and no rate counts events into it. Use [`Self::checked_from_timebase`]
+  /// where it may be degenerate.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn from_timebase(timebase: Timebase) -> Self {
+    match timebase.checked_recip() {
+      Some(rate) => Self(rate),
+      None => panic!("timebase numerator must be non-zero"),
+    }
+  }
+
+  /// Reads a [`Timebase`] as a rate, or `None` if it is degenerate — the
+  /// checked rung of [`Self::from_timebase`].
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_from_timebase(timebase: Timebase) -> Option<Self> {
+    match timebase.checked_recip() {
+      Some(rate) => Some(Self(rate)),
+      None => None,
+    }
+  }
+
+  /// How long `frames` events at this rate take, or `None` if no [`Duration`]
+  /// says so.
+  ///
+  /// Exactly [`Timebase::checked_pts_to_duration`] on the reciprocal, so it
+  /// rounds to the nearest nanosecond with halfway cases away from zero, as
+  /// every conversion in the crate does. Three things come back as `None`:
+  ///
+  /// - a negative `frames`, which [`Duration`] cannot represent;
+  /// - a span past [`Duration::MAX`];
+  /// - a degenerate `self.num() == 0` rate, whose events never happen.
+  ///
+  /// ```
+  /// use core::{num::NonZeroI32, time::Duration};
+  /// use mediatime::Rate;
+  ///
+  /// let ntsc = Rate::fps(30_000, NonZeroI32::new(1001).unwrap());
+  /// assert_eq!(
+  ///   ntsc.checked_frames_to_duration(30_000),
+  ///   Some(Duration::from_secs(1001))
+  /// );
+  /// assert_eq!(
+  ///   Rate::hz(30).checked_frames_to_duration(15),
+  ///   Some(Duration::from_millis(500))
+  /// );
+  /// ```
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn checked_frames_to_duration(&self, frames: i64) -> Option<Duration> {
+    match self.checked_to_timebase() {
+      Some(timebase) => timebase.checked_pts_to_duration(frames),
+      None => None,
+    }
+  }
+
+  /// How long `frames` events at this rate take, clamping at both ends of what
+  /// a [`Duration`] can hold — the saturating rung of
+  /// [`Self::checked_frames_to_duration`]: a negative count clamps to
+  /// [`Duration::ZERO`], a span past [`Duration::MAX`] to it.
+  ///
+  /// # Panics
+  ///
+  /// Panics if `self.num() == 0`, as [`Self::to_timebase`] does. Saturation is
+  /// a posture toward a span too long to hold, not toward a rate with no
+  /// reciprocal.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub const fn saturating_frames_to_duration(&self, frames: i64) -> Duration {
+    self.to_timebase().saturating_pts_to_duration(frames)
+  }
+}
+
+/// Writes the rate as `num/den` — `30000/1001`, `48000/1`, `24/1`.
+///
+/// [`Timebase`]'s rendering over the other reading of a rational, and exact
+/// for the same reason: a numerator and a denominator are the whole value, so
+/// `{:#}` renders identically. The stored form is printed rather than the
+/// reduced one, so a stream that declared `60000/2002` still reads as
+/// `60000/2002`.
+///
+/// A [roster name](Rate#the-well-known-roster) is never written. The name is
+/// an *input* convenience — [`FromStr`](core::str::FromStr) reads one, on top
+/// of inverting this rendering — and [`Rate::well_known_name`] is where a name
+/// goes to be recovered, so nothing here has to guess whether `24/1` was meant
+/// as `FPS_24`.
+///
+/// Width and alignment flags (`{:>12}`) are ignored, as [`Timebase`]'s are.
+impl fmt::Display for Rate {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Display::fmt(&self.0, f)
+  }
+}
+
 /// Validators keeping `Deserialize` from being a second construction path.
 ///
 /// A derived `Deserialize` assigns fields directly, so every invariant the
@@ -1284,19 +2123,68 @@ use de::{de_den, de_num};
 /// reads it backward, so a constant listed here is reachable from both
 /// directions or from neither — there is no second table to forget. The
 /// backward direction is single-valued only because no two entries are equal;
-/// `well_known_timebases_are_pairwise_distinct` pins that.
+/// `well_known_timebases_are_pairwise_distinct` pins that. The forward
+/// direction folds ASCII case, so it is single-valued only because no two
+/// names fold together;
+/// `well_known_timebase_names_do_not_collide_under_ascii_folding` pins that.
+///
+/// The frame-interval tail is [`WELL_KNOWN_RATES`] reciprocated, entry for
+/// entry and in the same order, so the two tables read as one family from
+/// either side; `the_frame_interval_family_is_the_rate_roster_reciprocated`
+/// pins that neither can grow without the other.
 const WELL_KNOWN: &[(&str, Timebase)] = &[
   ("SECONDS", Timebase::SECONDS),
   ("MILLIS", Timebase::MILLIS),
   ("MICROS", Timebase::MICROS),
   ("NANOS", Timebase::NANOS),
   ("MPEG_90K", Timebase::MPEG_90K),
-  ("HZ_48K", Timebase::HZ_48K),
+  ("HZ_8K", Timebase::HZ_8K),
+  ("HZ_11_025K", Timebase::HZ_11_025K),
+  ("HZ_12K", Timebase::HZ_12K),
+  ("HZ_16K", Timebase::HZ_16K),
+  ("HZ_22_05K", Timebase::HZ_22_05K),
+  ("HZ_24K", Timebase::HZ_24K),
+  ("HZ_32K", Timebase::HZ_32K),
   ("HZ_44_1K", Timebase::HZ_44_1K),
+  ("HZ_48K", Timebase::HZ_48K),
+  ("HZ_64K", Timebase::HZ_64K),
+  ("HZ_88_2K", Timebase::HZ_88_2K),
+  ("HZ_96K", Timebase::HZ_96K),
+  ("HZ_176_4K", Timebase::HZ_176_4K),
+  ("HZ_192K", Timebase::HZ_192K),
   ("NTSC_FILM", Timebase::NTSC_FILM),
-  ("NTSC_VIDEO", Timebase::NTSC_VIDEO),
   ("FILM_24", Timebase::FILM_24),
   ("PAL_25", Timebase::PAL_25),
+  ("NTSC_VIDEO", Timebase::NTSC_VIDEO),
+  ("VIDEO_30", Timebase::VIDEO_30),
+  ("PAL_50", Timebase::PAL_50),
+  ("NTSC_60", Timebase::NTSC_60),
+  ("VIDEO_60", Timebase::VIDEO_60),
+];
+
+/// The [well-known rates](Rate#the-well-known-roster) as one table, on the
+/// pattern of [`WELL_KNOWN`] and with the same two-way law: [`Rate::from_name`]
+/// reads it forward, [`Rate::well_known_name`] backward, and the first name
+/// listed for a value is the canonical spelling.
+///
+/// `from_name` folds ASCII case, so two entries differing only in case would
+/// make the forward direction ambiguous;
+/// `well_known_rate_names_do_not_collide_under_ascii_folding` pins that they
+/// do not, as `well_known_rates_are_pairwise_distinct` pins the backward
+/// direction.
+///
+/// Every entry reciprocates onto a named entry of [`WELL_KNOWN`] and back —
+/// `every_well_known_rate_reciprocates_onto_a_named_timebase` — so a rate
+/// added here without its timebase twin fails that test.
+const WELL_KNOWN_RATES: &[(&str, Rate)] = &[
+  ("FPS_23_976", Rate::FPS_23_976),
+  ("FPS_24", Rate::FPS_24),
+  ("FPS_25", Rate::FPS_25),
+  ("FPS_29_97", Rate::FPS_29_97),
+  ("FPS_30", Rate::FPS_30),
+  ("FPS_50", Rate::FPS_50),
+  ("FPS_59_94", Rate::FPS_59_94),
+  ("FPS_60", Rate::FPS_60),
 ];
 
 /// The exact quotient of a rescale, in `i128` and rounded, before either rung
@@ -1313,6 +2201,48 @@ const fn rescaled(pts: i64, from: Timebase, to: Timebase) -> i128 {
   let numerator = (pts as i128) * (from.num as i128) * (to.den.get() as i128);
   let denominator = (from.den.get() as i128) * (to.num as i128);
   div_round_half_away(numerator, denominator)
+}
+
+/// `ticks` of the `from` timebase recounted in `to`, or `None` where the
+/// rescale has no answer — the conversion every mixed-timebase span operation
+/// runs before it has two counts to work with.
+///
+/// An *identical* timebase is answered without arithmetic. That shortcut is
+/// not only speed: it is what keeps same-timebase arithmetic exact where a
+/// rescale would round, and total where a rescale would refuse a degenerate
+/// target. A count already in the target's own timebase needs no conversion,
+/// so there is none to refuse.
+#[cfg_attr(not(tarpaulin), inline(always))]
+const fn checked_recount(ticks: i64, from: Timebase, to: Timebase) -> Option<i64> {
+  if from.is_identical(&to) {
+    Some(ticks)
+  } else {
+    from.checked_rescale(ticks, to)
+  }
+}
+
+/// [`checked_recount`] with the saturating rung's posture: a count outside
+/// `i64` clamps, and a degenerate `to` panics.
+#[cfg_attr(not(tarpaulin), inline(always))]
+const fn saturating_recount(ticks: i64, from: Timebase, to: Timebase) -> i64 {
+  if from.is_identical(&to) {
+    ticks
+  } else {
+    from.saturating_rescale(ticks, to)
+  }
+}
+
+/// `const fn` form of [`Ord::cmp`] on `i128`, which the semantic comparisons
+/// need and the trait cannot give them in a `const` context.
+#[cfg_attr(not(tarpaulin), inline(always))]
+const fn cmp_i128(lhs: i128, rhs: i128) -> Ordering {
+  if lhs < rhs {
+    Ordering::Less
+  } else if lhs > rhs {
+    Ordering::Greater
+  } else {
+    Ordering::Equal
+  }
 }
 
 /// Integer division rounding to nearest, halfway cases **away from zero** —
@@ -1428,7 +2358,7 @@ fn write_clock(f: &mut fmt::Formatter<'_>, pts: i64, timebase: Timebase) -> fmt:
 #[cfg(feature = "quickcheck")]
 #[cfg_attr(docsrs, doc(cfg(feature = "quickcheck")))]
 pub mod quickcheck_impls {
-  use crate::{TimeRange, Timebase, Timestamp};
+  use crate::{Rate, SignedDuration, TimeRange, Timebase, Timestamp};
   use core::num::NonZeroI32;
   use quickcheck::{Arbitrary, Gen};
 
@@ -1449,6 +2379,21 @@ pub mod quickcheck_impls {
   /// Non-negative `pts` + arbitrary `Timebase`.
   pub fn timestamp(g: &mut Gen) -> Timestamp {
     Timestamp::new(non_negative_i64(g), timebase(g))
+  }
+
+  /// Any rational read as a rate, the degenerate `0/den` included: no events
+  /// per second is the reciprocal's refusal arm, and a generator that never
+  /// produced it would never reach that arm.
+  pub fn rate(g: &mut Gen) -> Rate {
+    let rational = timebase(g);
+    Rate::fps(rational.num(), rational.den())
+  }
+
+  /// Full-range tick count + arbitrary `Timebase`. Unlike the instant above,
+  /// a span has no non-negativity to preserve — pointing backwards is the
+  /// reason the type exists.
+  pub fn signed_duration(g: &mut Gen) -> SignedDuration {
+    SignedDuration::new(i64::arbitrary(g), timebase(g))
   }
 
   /// `[start, end)` with `start <= end`, both non-negative. The previous
@@ -1495,6 +2440,23 @@ const _: () = {
   impl<'a> Arbitrary<'a> for Timestamp {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
       non_negative_i64(u).and_then(|i| u.arbitrary().map(|tb| Self::new(i, tb)))
+    }
+  }
+
+  impl<'a> Arbitrary<'a> for Rate {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+      // Built from the rational the `Timebase` impl already draws in range,
+      // read as a rate rather than converted into one.
+      let rational: Timebase = u.arbitrary()?;
+      Ok(Self::fps(rational.num(), rational.den()))
+    }
+  }
+
+  impl<'a> Arbitrary<'a> for SignedDuration {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+      // No sign to constrain: a span points either way by design, so the
+      // whole `i64` is in range.
+      Ok(Self::new(u.arbitrary()?, u.arbitrary()?))
     }
   }
 

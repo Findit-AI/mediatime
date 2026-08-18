@@ -44,13 +44,15 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 
 ## Features
 
-- **Value-based equality and ordering.** `1/2 == 2/4 == 3/6`; `Timestamp(1000, 1/1000) == Timestamp(90_000, 1/90_000)`. Cross-timebase `cmp` uses 128-bit cross-multiply — exact for any `i32` numerator/denominator with any `i64` PTS.
+- **Value-based equality and ordering on the instants and the rationals.** `1/2 == 2/4 == 3/6`; `Timestamp(1000, 1/1000) == Timestamp(90_000, 1/90_000)`. Cross-timebase `cmp` uses 128-bit cross-multiply — exact for any `i32` numerator/denominator with any `i64` PTS. Spans and ranges are compared as written instead, and carry no `Ord` at all; each type's docs say which it is and why.
 - **Hash agrees with Eq.** Hashes the reduced-form rational, so equal rationals hash identically and you can use these types as `HashMap` keys.
-- **FFmpeg-style utilities.** `checked_rescale` / `saturating_rescale` (a.k.a. `av_rescale_q`, rounding to nearest with halfway cases away from zero, as FFmpeg's `AV_ROUND_NEAR_INF` does), `frames_to_duration`, `checked_duration_to_pts` / `checked_pts_to_duration`, `duration_since`, `saturating_sub_duration`. Every lossy conversion is spelled `checked_` or `saturating_` — there is no bare name whose overflow posture you have to remember.
-- **Named timebases.** `Timebase::MILLIS`, `MPEG_90K`, `HZ_48K`, `NTSC_VIDEO`, `FILM_24` and the rest of the roster, each with the container or codec convention that declares it. `Timebase::from_name("MPEG_90K")` reads a name, `well_known_name()` writes one back, and `FromStr` accepts either a name or `num/den`.
+- **FFmpeg-style utilities.** `checked_rescale` / `saturating_rescale` (a.k.a. `av_rescale_q`, rounding to nearest with halfway cases away from zero, as FFmpeg's `AV_ROUND_NEAR_INF` does), `checked_duration_to_pts` / `checked_pts_to_duration`, `duration_since`, `saturating_sub_duration`. Every lossy conversion is spelled `checked_` or `saturating_` — there is no bare name whose overflow posture you have to remember.
+- **Rates are their own type.** `Rate` is a timebase read the other way round — events per second rather than seconds per tick — so a frame rate cannot reach `av_rescale_q` as a timebase by accident. It knows how long *n* frames take (`checked_frames_to_duration`), carries its own roster (`Rate::FPS_29_97`, `FPS_23_976`, …), and converts both ways with `to_timebase` / `from_timebase`. Its eight rates are `Timebase`'s eight frame intervals reciprocated, entry for entry — a test pins the bijection, so neither roster can grow a frame rate without the other.
+- **Signed spans.** `SignedDuration` is what the difference of two instants actually is — `later.signed_duration_since(&earlier)` — and `Duration` cannot hold it, being unsigned. It shifts an instant back again (`ts.checked_add_signed(span)`, `saturating_sub_signed`), adds and subtracts across timebases, and answers in the left operand's. Sorting by length is asked for by name — `spans.sort_by(SignedDuration::cmp_semantic)` — because `2 @ 1/1` and `1000 @ 1/1000` are one second apart in length and the counts say the opposite.
+- **Named timebases.** Twenty-seven in three families: the clock subdivisions (`SECONDS`, `MILLIS`, `MICROS`, `NANOS`, `MPEG_90K`), fourteen audio sample intervals (`HZ_8K` … `HZ_192K`), and eight frame intervals (`NTSC_FILM`, `FILM_24`, `PAL_25`, `NTSC_VIDEO`, `VIDEO_30`, `PAL_50`, `NTSC_60`, `VIDEO_60`) — each with the container or codec convention that declares it. `Timebase::from_name("MPEG_90K")` reads a name — in any ASCII case, so `"mpeg_90k"` reads too — `well_known_name()` writes the canonical spelling back, and `FromStr` accepts either a name or `num/den`. One value, one name: the roster holds the values a convention travels with, so Matroska's and FLV's millisecond bases are both `MILLIS` with no alias beside it, while an MP4/MOV timescale — chosen per file by the muxer — carries no convention to name and stays the rational it is.
 - **`TimeRange` interpolation.** Linear midpoint (`interpolate(t)`) for placing an event somewhere between fade-out and fade-in frames, with `t ∈ [0, 1]` clamped.
-- **`Display` for logs.** `{}` is readable — `1/1000`, `0:00:00.137`, `[0:00:01.500, 0:00:03.250)`; `{:#}` is exact — `12345 @ 1/90000`, `[1500, 3250) @ 1/1000`.
-- **`FromStr` for the exact form.** `"1/1000"`, `"12345 @ 1/90000"` and `"[1500, 3250) @ 1/1000"` parse back to the value that wrote them. The readable clock has no inverse — it is truncated to milliseconds and names no timebase — so it is rejected rather than guessed at.
+- **`Display` for logs.** `{}` is readable where there is a readable form — `0:00:00.137`, `[0:00:01.500, 0:00:03.250)` — and `{:#}` is exact: `12345 @ 1/90000`, `[1500, 3250) @ 1/1000`. A rational, a rate and a span have nothing to expand into, so their one rendering is exact in both: `1/1000`, `30000/1001`, `-1500 @ 1/1000`.
+- **`FromStr` for the exact form.** All five types read back the value that wrote them, each rejecting with its own error. The readable clock has no inverse — it is truncated to milliseconds and names no timebase — so it is rejected rather than guessed at. Roster names read on the input side only, and only on their own door: `"MILLIS"` is a timebase, `"FPS_24"` is a rate, and neither parses as the other, a rate being the reciprocal reading of a rational rather than a second spelling of it.
 - **`no_std` + `no_alloc` library.** The library builds without `std` and `alloc`; tests use `std`.
 - **`const fn` throughout.** Build `Timebase` / `Timestamp` / `TimeRange` in `const` context.
 
@@ -59,7 +61,7 @@ mediatime::Timestamp:     100 ms    == 9000 ticks @ 1/90000 → true
 ```rust
 use core::num::NonZeroI32;
 use core::time::Duration;
-use mediatime::{Timebase, Timestamp, TimeRange};
+use mediatime::{Rate, Timebase, Timestamp, TimeRange};
 
 // FFmpeg-style rational timebases — spelled out, or taken from the roster.
 let ms     = Timebase::new(1, NonZeroI32::new(1000).unwrap());
@@ -78,9 +80,21 @@ assert_eq!(a.duration_since(&b), Some(Duration::ZERO));
 assert_eq!(ms.checked_rescale(500, mpegts), Some(45_000));
 assert_eq!(ms.saturating_rescale(500, mpegts), 45_000);
 
-// Frame rate helpers — treat `Timebase` as fps and count frames.
-let ntsc = Timebase::new(30_000, NonZeroI32::new(1001).unwrap());
-assert_eq!(ntsc.frames_to_duration(30_000), Duration::from_secs(1001));
+// Point minus point is a vector: the difference of two instants is signed,
+// and shifting an instant by one crosses timebases on the way.
+let span = b.signed_duration_since(&Timestamp::new(45_000, mpegts));
+assert_eq!(span.ticks(), 45_000); // half a second, on the MPEG clock
+assert_eq!(a.checked_add_signed(span), Some(Timestamp::new(1_500, ms)));
+
+// A frame rate is its own type: the reciprocal reading, and it knows how
+// long n frames take.
+let ntsc = Rate::fps(30_000, NonZeroI32::new(1001).unwrap());
+assert_eq!(ntsc, Rate::FPS_29_97);
+assert_eq!(ntsc.to_timebase(), Timebase::NTSC_VIDEO);
+assert_eq!(
+  ntsc.checked_frames_to_duration(30_000),
+  Some(Duration::from_secs(1001))
+);
 
 // A half-open [start, end) range with interpolation.
 let r = TimeRange::new(100, 500, ms);
@@ -93,11 +107,19 @@ assert_eq!(format!("{}",  Timestamp::new(12_345, mpegts)), "0:00:00.137");
 assert_eq!(format!("{:#}", Timestamp::new(12_345, mpegts)), "12345 @ 1/90000");
 assert_eq!(format!("{r}"),  "[0:00:00.100, 0:00:00.500)");
 assert_eq!(format!("{r:#}"), "[100, 500) @ 1/1000");
+assert_eq!(format!("{ntsc}"), "30000/1001");
+assert_eq!(format!("{span}"), "45000 @ 1/90000");
 
 // `FromStr` inverts the exact form, and also reads a roster name.
 assert_eq!("1/1000".parse::<Timebase>(), Ok(ms));
 assert_eq!("MILLIS".parse::<Timebase>(), Ok(ms));
 assert_eq!("[100, 500) @ 1/1000".parse::<TimeRange>(), Ok(r));
+assert_eq!("FPS_29_97".parse::<Rate>(), Ok(ntsc));
+assert_eq!("45000 @ 1/90000".parse(), Ok(span));
+
+// Each roster stays on its own door: a rate is not a timebase.
+assert!("MILLIS".parse::<Rate>().is_err());
+assert!("FPS_29_97".parse::<Timebase>().is_err());
 ```
 
 ## Installation

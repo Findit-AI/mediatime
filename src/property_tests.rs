@@ -32,6 +32,17 @@ fn target_timebase((num, den): (u32, u32)) -> Timebase {
   Timebase::new((num % MAX + 1) as i32, nz((den % MAX + 1) as i32))
 }
 
+/// A `Timebase` drawn from a deliberately tiny pool: numerator in `0..3`,
+/// denominator in `1..4`.
+///
+/// The degenerate `0/den` — and two different spellings of it — come up often
+/// here and approximately never in a full-range draw, which is where the
+/// comparison laws are hardest and where an identical-timebase fast path can
+/// disagree with the cross-multiply.
+fn coarse_timebase((num, den): (u32, u32)) -> Timebase {
+  Timebase::new((num % 3) as i32, nz((den % 3 + 1) as i32))
+}
+
 /// The exact, unrounded quotient of a rescale as `(numerator, denominator)` —
 /// rebuilt here from the definition rather than borrowed from the
 /// implementation, so a property comparing against it tests the rounding
@@ -43,9 +54,24 @@ fn exact_quotient(pts: i64, from: Timebase, to: Timebase) -> (i128, i128) {
   )
 }
 
-fn hash_of(tb: &Timebase) -> u64 {
+/// A roster name in one ASCII case or the other — the two ends of what the
+/// name doors fold, from a name that is `SCREAMING_SNAKE_CASE` to begin with.
+fn fold(name: &str, upper: bool) -> String {
+  name
+    .chars()
+    .map(|c| {
+      if upper {
+        c.to_ascii_uppercase()
+      } else {
+        c.to_ascii_lowercase()
+      }
+    })
+    .collect()
+}
+
+fn hash_of<T: Hash>(v: &T) -> u64 {
   let mut h = std::collections::hash_map::DefaultHasher::new();
-  tb.hash(&mut h);
+  v.hash(&mut h);
   h.finish()
 }
 
@@ -114,6 +140,35 @@ quickcheck! {
     }
   }
 
+  /// `cmp_semantic` is an order, degenerate timebases included — the twin of
+  /// `span_semantic_order_is_transitive`, over the instants, and drawn from
+  /// the same tiny pool for the same reason.
+  fn instant_semantic_order_is_transitive(a: (i8, u32, u32), b: (i8, u32, u32), c: (i8, u32, u32)) -> bool {
+    let at = |(pts, num, den): (i8, u32, u32)| Timestamp::new(pts as i64, coarse_timebase((num, den)));
+    let (x, y, z) = (at(a), at(b), at(c));
+    !(x.cmp_semantic(&y).is_le() && y.cmp_semantic(&z).is_le()) || x.cmp_semantic(&z).is_le()
+  }
+
+  /// Every PTS of a degenerate `0/den` tick names instant zero, so all such
+  /// instants compare equal — to each other, however each is written, and to
+  /// zero anywhere else — and hash alike, which is the law an ordered or
+  /// hashed container is entitled to.
+  ///
+  /// Degenerate **by construction** rather than waited for, for the reason
+  /// `every_span_in_a_degenerate_timebase_measures_zero` records: a
+  /// full-range numerator is zero approximately never, and reaching this
+  /// corner by drawing needs three degenerate timebases at once, two of them
+  /// written identically. Measured against a fast path with the degeneracy
+  /// guard removed, this property failed 3 runs in 3 while
+  /// `instant_semantic_order_is_transitive` above failed 0 in 3 — so this is
+  /// the one holding the guard down, and it must stay drawn this way.
+  fn every_instant_in_a_degenerate_timebase_is_instant_zero(a: (i64, u32), b: (i64, u32), tb: (u32, u32)) -> bool {
+    let nowhere = |(pts, den): (i64, u32)| Timestamp::new(pts, Timebase::new(0, nz((den % 4 + 1) as i32)));
+    let (x, y) = (nowhere(a), nowhere(b));
+    let origin = Timestamp::new(0, any_timebase(tb));
+    x == y && x == origin && hash_of(&x) == hash_of(&y) && hash_of(&x) == hash_of(&origin)
+  }
+
   /// `Duration` → ticks is the same conversion as a rescale out of
   /// `Timebase::NANOS`, rounding and refusals included — two spellings of one
   /// operation, which is what makes `NANOS` the timebase a `Duration` is
@@ -155,6 +210,8 @@ quickcheck! {
     }
   }
 
+  /// The `None` arm here must stay an arm and not become a call: `None`
+  /// includes the degenerate timebase, where the saturating rung panics.
   fn the_duration_to_pts_rungs_agree(secs: u32, nanos: u32, tb: (u32, u32)) -> bool {
     let d = Duration::new(secs as u64, nanos % 1_000_000_000);
     let tb = any_timebase(tb);
@@ -184,11 +241,12 @@ quickcheck! {
       && hash_of(&reduced) == hash_of(&tb)
   }
 
-  /// A timebase that answers to a roster name parses back from that name.
-  fn the_name_table_reads_both_ways(tb: (u32, u32)) -> bool {
+  /// A timebase that answers to a roster name reads back from that name, in
+  /// any ASCII casing.
+  fn the_name_table_reads_both_ways(tb: (u32, u32), upper: bool) -> bool {
     let tb = any_timebase(tb);
     match tb.well_known_name() {
-      Some(name) => Timebase::from_name(name) == Some(tb),
+      Some(name) => Timebase::from_name(name) == Some(tb) && Timebase::from_name(&fold(name, upper)) == Some(tb),
       None => true,
     }
   }
@@ -201,6 +259,195 @@ quickcheck! {
     match tb.checked_recip().and_then(Timebase::checked_recip) {
       Some(back) => format!("{back:?}") == format!("{tb:?}"),
       None => tb.num() == 0,
+    }
+  }
+
+  /// A span negated twice is the span it started from, and the timebase does
+  /// not move. `i64::MIN` ticks is the one span with no opposite.
+  fn negating_a_span_twice_returns_it(ticks: i64, tb: (u32, u32)) -> bool {
+    let span = SignedDuration::new(ticks, any_timebase(tb));
+    match span.checked_neg().and_then(SignedDuration::checked_neg) {
+      Some(back) => back == span,
+      None => ticks == i64::MIN,
+    }
+  }
+
+  /// `abs` is the magnitude: never backwards, either the span or its
+  /// negation, and already settled after one application.
+  fn abs_is_the_magnitude_of_a_span(ticks: i64, tb: (u32, u32)) -> bool {
+    let span = SignedDuration::new(ticks, any_timebase(tb));
+    match span.checked_abs() {
+      Some(magnitude) => {
+        !magnitude.is_negative()
+          && (magnitude == span || Some(magnitude) == span.checked_neg())
+          && magnitude.checked_abs() == Some(magnitude)
+      }
+      None => ticks == i64::MIN,
+    }
+  }
+
+  /// Adding a span and subtracting the same one returns what it started from
+  /// — exactly, both spans being counted in one timebase.
+  fn adding_a_span_and_subtracting_it_returns_the_first(a: i64, b: i64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let (x, y) = (SignedDuration::new(a, tb), SignedDuration::new(b, tb));
+    match x.checked_add(y) {
+      Some(sum) => sum.checked_sub(y) == Some(x),
+      None => true,
+    }
+  }
+
+  /// In one timebase the sum of two spans is exactly the sum of two `i64`s:
+  /// the counts are added, not converted, so neither rung can round.
+  fn spans_in_one_timebase_add_as_i64s(a: i64, b: i64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let (x, y) = (SignedDuration::new(a, tb), SignedDuration::new(b, tb));
+    x.checked_add(y).map(|sum| sum.ticks()) == a.checked_add(b)
+      && x.saturating_add(y).ticks() == a.saturating_add(b)
+      && x.checked_sub(y).map(|d| d.ticks()) == a.checked_sub(b)
+      && x.saturating_sub(y).ticks() == a.saturating_sub(b)
+  }
+
+  /// Rescaling spans is monotone, so it agrees with `cmp_semantic` — the law
+  /// the instant twin obeys, for the reason
+  /// `rescale_preserves_semantic_order` gives, including why the counts are
+  /// drawn as `i8`s.
+  fn rescaling_spans_preserves_semantic_order(a: (i8, u32, u32), b: (i8, u32, u32), to: (u32, u32)) -> bool {
+    let x = SignedDuration::new(a.0 as i64, any_timebase((a.1, a.2)));
+    let y = SignedDuration::new(b.0 as i64, any_timebase((b.1, b.2)));
+    let to = target_timebase(to);
+    let (rx, ry) = (x.rescale_to(to).ticks(), y.rescale_to(to).ticks());
+    match x.cmp_semantic(&y) {
+      Ordering::Less => rx <= ry,
+      Ordering::Greater => rx >= ry,
+      Ordering::Equal => rx == ry,
+    }
+  }
+
+  /// `cmp_semantic` is an order, degenerate timebases included — the case
+  /// `coarse_timebase` exists to reach, and the one where comparing counts
+  /// under an identical-timebase fast path would report an order the spans
+  /// do not have.
+  fn span_semantic_order_is_transitive(a: (i8, u32, u32), b: (i8, u32, u32), c: (i8, u32, u32)) -> bool {
+    let span =
+      |(t, num, den): (i8, u32, u32)| SignedDuration::new(t as i64, coarse_timebase((num, den)));
+    let (x, y, z) = (span(a), span(b), span(c));
+    !(x.cmp_semantic(&y).is_le() && y.cmp_semantic(&z).is_le()) || x.cmp_semantic(&z).is_le()
+  }
+
+  /// Every count of a degenerate `0/den` tick measures zero seconds, so all
+  /// such spans compare equal — to each other, however each is written, and
+  /// to a zero span anywhere else.
+  ///
+  /// Degenerate **by construction** rather than waited for: a full-range
+  /// numerator is zero approximately never, and the transitivity property
+  /// above misses this corner about a third of the time (measured against a
+  /// fast path with the degeneracy guard removed: 2 failures in 3 runs, where
+  /// this property failed 3 in 3). This is where such a fast path reports an
+  /// order the spans do not have.
+  fn every_span_in_a_degenerate_timebase_measures_zero(a: (i64, u32), b: (i64, u32), tb: (u32, u32)) -> bool {
+    let nowhere = |(ticks, den): (i64, u32)| SignedDuration::new(ticks, Timebase::new(0, nz((den % 4 + 1) as i32)));
+    let (x, y) = (nowhere(a), nowhere(b));
+    x.cmp_semantic(&y).is_eq() && x.cmp_semantic(&SignedDuration::new(0, any_timebase(tb))).is_eq()
+  }
+
+  /// A rate is a timebase read the other way round, and reading it back is
+  /// where it started — *structurally*, nothing reduced on the way. The
+  /// degenerate rate is the only one without the reading.
+  fn a_rate_is_its_timebase_read_backwards(tb: (u32, u32)) -> bool {
+    let rational = any_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    match rate.checked_to_timebase().and_then(Rate::checked_from_timebase) {
+      Some(back) => format!("{back:?}") == format!("{rate:?}"),
+      None => rate.num() == 0,
+    }
+  }
+
+  /// A rate that answers to a roster name reads back from that name, in any
+  /// ASCII casing, and the canonical spelling is what comes back out.
+  fn the_rate_name_table_reads_both_ways(tb: (u32, u32), upper: bool) -> bool {
+    let rational = any_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    match rate.well_known_name() {
+      Some(name) => Rate::from_name(name) == Some(rate) && Rate::from_name(&fold(name, upper)) == Some(rate),
+      None => true,
+    }
+  }
+
+  /// A whole number of seconds' worth of events is that many seconds, exactly
+  /// — at any whole rate, which is the answer the conversion cannot round its
+  /// way out of.
+  fn whole_seconds_of_frames_are_whole_seconds(rate: u16, secs: u16) -> bool {
+    let rate = (rate % 1000) as i64 + 1;
+    let frames = rate * (secs as i64);
+    Rate::hz(rate as i32).checked_frames_to_duration(frames)
+      == Some(Duration::from_secs(secs as u64))
+  }
+
+  /// The two frame-count rungs agree wherever the checked one answers. The
+  /// rate is drawn non-degenerate, that being where the saturating rung
+  /// panics rather than answering.
+  fn the_frames_to_duration_rungs_agree(frames: i64, tb: (u32, u32)) -> bool {
+    let rational = target_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    match rate.checked_frames_to_duration(frames) {
+      Some(d) => rate.saturating_frames_to_duration(frames) == d,
+      None => true,
+    }
+  }
+
+  /// A span parses back from its own rendering — *structurally*, nothing
+  /// reduced or re-counted on the way — over the whole `i64` and every
+  /// timebase the constructor admits.
+  fn a_span_parses_back_from_its_rendering(ticks: i64, tb: (u32, u32)) -> bool {
+    let span = SignedDuration::new(ticks, any_timebase(tb));
+    format!("{span}").parse::<SignedDuration>().map(|parsed| format!("{parsed:?}"))
+      == Ok(format!("{span:?}"))
+  }
+
+  /// A rate parses back from its own rendering, on the same law.
+  fn a_rate_parses_back_from_its_rendering(tb: (u32, u32)) -> bool {
+    let rational = any_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    format!("{rate}").parse::<Rate>().map(|parsed| format!("{parsed:?}"))
+      == Ok(format!("{rate:?}"))
+  }
+
+  /// Rendering a *parsed* rate settles after one pass, whichever arm the
+  /// input took: a roster name is read on the way in and never written on the
+  /// way out, so the second pass has nothing left to change. The name is
+  /// drawn in either ASCII case, the door folding it.
+  ///
+  /// The name arm is deliberately not injective — `well_known_name` matches
+  /// by value, so `60000/2002` answers to `FPS_29_97` and comes back as
+  /// `30000/1001`, equal to what it started as but not written the same way.
+  /// That is why the conclusion is `==` on the rate and equality on the
+  /// *second* rendering rather than the first.
+  fn rendering_a_parsed_rate_settles_after_one_pass(tb: (u32, u32), upper: bool) -> bool {
+    let rational = any_timebase(tb);
+    let rate = Rate::fps(rational.num(), rational.den());
+    let written = match rate.well_known_name() {
+      Some(name) => fold(name, upper),
+      None => format!("{rate}"),
+    };
+    match written.parse::<Rate>() {
+      Ok(once) => match format!("{once}").parse::<Rate>() {
+        Ok(twice) => once == rate && format!("{once}") == format!("{twice}"),
+        Err(_) => false,
+      },
+      Err(_) => false,
+    }
+  }
+
+  /// Shifting an instant by a span and asking what span separates the two
+  /// returns the span — the law that makes the pair inverses.
+  fn a_shift_and_the_span_it_moved_by_are_inverses(pts: i64, ticks: i64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let ts = Timestamp::new(pts, tb);
+    let span = SignedDuration::new(ticks, tb);
+    match ts.checked_add_signed(span) {
+      Some(shifted) => shifted.checked_signed_duration_since(&ts) == Some(span),
+      None => true,
     }
   }
 }

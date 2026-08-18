@@ -14,12 +14,12 @@ fn de(num: i32, den: i32) -> Result<Timebase, Error> {
   ))
 }
 
-/// The two value shapes a `TimeRange` map holds: an integer endpoint and a
+/// The two value shapes the composite maps hold: an integer field and a
 /// nested timebase map. serde's `de::value` helpers only build *homogeneous*
 /// maps, and no self-describing format is among this crate's dev-dependencies,
 /// so the heterogeneous map is built here instead.
 enum Field {
-  Pts(i64),
+  Integer(i64),
   Timebase(i32, i32),
 }
 
@@ -36,7 +36,7 @@ impl<'de> Deserializer<'de> for Field {
 
   fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
     match self {
-      Self::Pts(v) => visitor.visit_i64(v),
+      Self::Integer(v) => visitor.visit_i64(v),
       Self::Timebase(num, den) => visitor.visit_map(MapDeserializer::new(
         [("numerator", num), ("denominator", den)].into_iter(),
       )),
@@ -50,11 +50,21 @@ impl<'de> Deserializer<'de> for Field {
   }
 }
 
+fn de_span(ticks: i64, num: i32, den: i32) -> Result<SignedDuration, Error> {
+  SignedDuration::deserialize(MapDeserializer::new(
+    [
+      ("ticks", Field::Integer(ticks)),
+      ("timebase", Field::Timebase(num, den)),
+    ]
+    .into_iter(),
+  ))
+}
+
 fn de_range(start: i64, end: i64, num: i32, den: i32) -> Result<TimeRange, Error> {
   TimeRange::deserialize(MapDeserializer::new(
     [
-      ("start", Field::Pts(start)),
-      ("end", Field::Pts(end)),
+      ("start", Field::Integer(start)),
+      ("end", Field::Integer(end)),
       ("timebase", Field::Timebase(num, den)),
     ]
     .into_iter(),
@@ -88,6 +98,59 @@ fn field_names_are_unchanged() {
   let by_wrong_name: Result<Timebase, Error> =
     Timebase::deserialize(MapDeserializer::new([("num", 1), ("den", 2)].into_iter()));
   assert!(by_wrong_name.is_err());
+}
+
+#[test]
+fn rate_deserialize_is_its_rational() {
+  // A newtype is transparent on the wire, so a rate arrives as the rational
+  // it is — under the `Timebase` field names, with the `Timebase` validators.
+  fn de_rate(num: i32, den: i32) -> Result<Rate, Error> {
+    Rate::deserialize(MapDeserializer::new(
+      [("numerator", num), ("denominator", den)].into_iter(),
+    ))
+  }
+
+  assert_eq!(de_rate(30_000, 1001).unwrap(), Rate::FPS_29_97);
+  assert_eq!(de_rate(0, 1).unwrap(), Rate::hz(0));
+  assert!(de_rate(-1, 1001).is_err());
+  assert!(de_rate(30_000, 0).is_err());
+  assert!(de_rate(30_000, -1001).is_err());
+}
+
+#[test]
+fn signed_duration_deserialize_admits_both_directions() {
+  let ms = Timebase::new(1, nz(1000));
+  assert_eq!(
+    de_span(-1500, 1, 1000).unwrap(),
+    SignedDuration::new(-1500, ms)
+  );
+  assert_eq!(
+    de_span(1500, 1, 1000).unwrap(),
+    SignedDuration::new(1500, ms)
+  );
+  // The count has no invariant to enforce — a span points either way — but
+  // the nested timebase keeps its own field validators.
+  assert!(de_span(0, -1, 1000).is_err());
+  assert!(de_span(0, 1, 0).is_err());
+  assert!(de_span(0, 1, -1000).is_err());
+}
+
+#[test]
+fn signed_duration_field_names_are_unchanged() {
+  // Both names are the compatibility surface, and both are required.
+  let renamed: Result<SignedDuration, Error> = SignedDuration::deserialize(MapDeserializer::new(
+    [
+      ("count", Field::Integer(0)),
+      ("timebase", Field::Timebase(1, 1000)),
+    ]
+    .into_iter(),
+  ));
+  assert!(renamed.is_err());
+
+  let missing_timebase: Result<SignedDuration, Error> = SignedDuration::deserialize(
+    MapDeserializer::new([("ticks", Field::Integer(0))].into_iter()),
+  );
+  assert!(missing_timebase.is_err());
 }
 
 #[test]
@@ -132,8 +195,8 @@ fn time_range_field_names_are_unchanged() {
   // names, all still required.
   let renamed: Result<TimeRange, Error> = TimeRange::deserialize(MapDeserializer::new(
     [
-      ("from", Field::Pts(0)),
-      ("to", Field::Pts(10)),
+      ("from", Field::Integer(0)),
+      ("to", Field::Integer(10)),
       ("timebase", Field::Timebase(1, 1000)),
     ]
     .into_iter(),
@@ -142,7 +205,7 @@ fn time_range_field_names_are_unchanged() {
 
   let missing_end: Result<TimeRange, Error> = TimeRange::deserialize(MapDeserializer::new(
     [
-      ("start", Field::Pts(0)),
+      ("start", Field::Integer(0)),
       ("timebase", Field::Timebase(1, 1000)),
     ]
     .into_iter(),
