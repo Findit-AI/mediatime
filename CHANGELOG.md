@@ -6,6 +6,66 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0]
+
+### Added
+
+- `SignedDuration` — the vector to `Timestamp`'s point: `{ ticks: i64, timebase }`
+  with the full named ladder (`checked_`/`saturating_` × `neg`/`abs`/`add`/`sub`),
+  `cmp_semantic`, and the `rescale_to`/`checked_rescale_to` pair. Deliberately no
+  `Ord`: length ordering is asked for by name — `sort_by(SignedDuration::cmp_semantic)`
+  — because the structural order a derive would give sorts `2 @ 1/1` (two seconds)
+  ahead of `1000 @ 1/1000` (one second).
+- `Rate` — the other reading of a rational, where the value *is* the rate
+  (`30000/1001` fps stores `30000/1001`): `hz`/`fps` constructors with `try_`
+  twins, the reciprocal layer `to_timebase`/`from_timebase`
+  (+ `checked_` twins), eight `FPS_*` constants with `from_name`/
+  `well_known_name`, and the frame arithmetic that used to live on `Timebase`:
+  `checked_frames_to_duration`/`saturating_frames_to_duration`.
+- `Timestamp::signed_duration_since`/`checked_signed_duration_since` and the
+  four signed rungs `checked_add_signed`/`saturating_add_signed`/
+  `checked_sub_signed`/`saturating_sub_signed`.
+- `Display`/`FromStr` for the two new types: `SignedDuration` renders the exact
+  form (`-1500 @ 1/1000`), `Rate` the numeric form and additionally parses its
+  roster names. Each has its own parse error (`ParseSignedDurationError`,
+  `ParseRateError`); the two rosters are deliberately disjoint
+  (`"MILLIS".parse::<Rate>()` errors).
+- `Display` for `Timebase`, `Timestamp` and `TimeRange`.
+- The `Timebase` roster grows to 25 named constants: the audio sample-rate
+  family (`HZ_8K` … `HZ_192K`, fourteen members) and the frame-interval family
+  completed to eight (`VIDEO_30`, `PAL_50`, `NTSC_60`, `VIDEO_60` join
+  `NTSC_FILM`/`NTSC_VIDEO`/`FILM_24`/`PAL_25`), with `from_name`/
+  `well_known_name` and a test-pinned bijection against the `Rate` roster. One
+  value, one name — no aliases (Matroska's millisecond base is `MILLIS`).
+- Name lookups (`from_name`, and `FromStr` where it reads names) accept
+  ASCII-case-insensitively; the canonical spelling is what `well_known_name`
+  returns.
+
+### Changed
+
+- **Breaking:** the bare-name arithmetic is gone. `Timebase::rescale_pts`,
+  `Timebase::rescale` and `Timebase::duration_to_pts` are replaced by the
+  named ladder: `checked_rescale`/`saturating_rescale` and
+  `checked_duration_to_pts`/`saturating_duration_to_pts` — every lossy
+  operation spells its overflow posture.
+- **Breaking:** rounding is round-to-nearest, ties away from zero — FFmpeg's
+  `AV_ROUND_NEAR_INF`, which is what `av_rescale_q` actually defaults to. The
+  old docs claimed truncation matched `av_rescale_q`; they were wrong, and the
+  whole ladder (rescale, duration conversion, and `Rate`'s frame arithmetic)
+  now rounds one way.
+- **Breaking:** a degenerate timebase (`num == 0`) now panics on both
+  saturating rungs (`saturating_rescale` already did;
+  `saturating_duration_to_pts` answered `0`) — `i64::saturating_div`'s
+  precedent: saturation is a posture toward overflow, and a degenerate base
+  has no quotient to clamp. `Timestamp::saturating_add_duration`/
+  `saturating_sub_duration` panic accordingly instead of silently not moving.
+- **Breaking:** `Timestamp`'s semantic comparison guards its same-timebase
+  fast path against degenerate timebases. Before the guard, `Eq` was not
+  transitive (`1 @ 0/1 == 0 @ 1/1` and `2 @ 0/1 == 0 @ 1/1`, yet
+  `1 @ 0/1 != 2 @ 0/1`), which `BTreeMap`/`sort` rely on; every instant of a
+  degenerate timebase now compares equal through the cross-multiply, agreeing
+  with `Hash`.
+
 ## [0.2.0]
 
 ### Changed
