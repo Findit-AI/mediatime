@@ -6,6 +6,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Duration` — the unsigned counterpart to `SignedDuration`: `{ ticks: u64,
+  timebase }` for a media duration that is never negative, with the same
+  named ladder minus the sign-only ops. `checked_`/`saturating_` ×
+  `add`/`sub` (subtraction refuses or clamps to zero instead of going
+  negative — `u64::checked_sub`/`saturating_sub`'s posture, not a
+  pathological edge), `cmp_semantic`, and `rescale_to`/`checked_rescale_to`.
+  `is_zero` alone survives from `SignedDuration`'s
+  `is_negative`/`is_positive`/`is_zero` trio (`is_negative` has no answer but
+  `false`, `is_positive` is exactly `!is_zero()`); `neg`/`abs` are dropped
+  outright, an unsigned count having no opposite or magnitude to give.
+  Deliberately no `Ord`, for `SignedDuration`'s reason.
+- Conversions both ways with `core::time::Duration` — imported internally as
+  `StdDuration`, freeing the bare `Duration` name for the new type (the
+  crate's own call sites for the standard type were mechanically
+  repointed): `checked_from_std`/`saturating_from_std`/`checked_to_std`/
+  `saturating_to_std`. The timebase conversion math grows a private `u64`
+  rung for this (`Timebase::tick_nanos_unsigned` beside `tick_nanos`, and a
+  `rescaled_unsigned`/`checked_rescale_unsigned`/`saturating_rescale_unsigned`/
+  `checked_recount_unsigned`/`saturating_recount_unsigned` family beside
+  their `i64` counterparts, all crate-private) rather than `Duration` slotting
+  into `Timebase`'s public, `i64`-bound `checked_duration_to_pts` family: a
+  `Duration` counts up to `u64::MAX` ticks, twice that family's reach, and
+  reusing it would have silently halved a `Duration`'s usable range.
+  `Timebase`'s public surface is unchanged.
+- Conversions both ways with `SignedDuration` — the checked sign transition:
+  `checked_from_signed`/`saturating_from_signed` (refuses or clamps a
+  backward span to zero) and `checked_to_signed`/`saturating_to_signed`
+  (refuses or clamps past `i64::MAX`, since a `Duration` can count twice as
+  far).
+- `Display`/`FromStr` for `Duration`: the same exact `ticks @ num/den` form
+  `SignedDuration` writes, minus the sign. Its own parse error,
+  `ParseDurationError`.
+- `serde`/`quickcheck`/`arbitrary` treatments for `Duration`, mirroring
+  `SignedDuration`'s: a plain field derive for `serde` (the count has no
+  invariant to enforce, so there is nothing for a manual impl to validate);
+  full-`u64`-range generators for `quickcheck`/`arbitrary`, unfiltered, for
+  the same reason. No `buffa` treatment — `SignedDuration` has none either.
+
 ## [0.3.0]
 
 ### Added

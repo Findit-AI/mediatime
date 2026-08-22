@@ -68,6 +68,22 @@ fn signed_duration_spans_both_directions() {
 }
 
 #[test]
+fn duration_is_well_formed() {
+  let mut nonzero = false;
+  for seed in 0..200 {
+    let data = pseudo_random_bytes(seed);
+    let mut u = Unstructured::new(&data);
+    let d = Duration::arbitrary(&mut u).expect("enough bytes to build a Duration");
+    assert!(d.timebase().den().get() > 0);
+    assert!(d.timebase().num() >= 0);
+    nonzero |= !d.is_zero();
+  }
+  // The whole `u64` is in range, as `SignedDuration`'s whole `i64` is next
+  // door — this one simply has no sign half to exercise.
+  assert!(nonzero);
+}
+
+#[test]
 fn timerange_is_well_formed() {
   for seed in 0..200 {
     let data = pseudo_random_bytes(seed);

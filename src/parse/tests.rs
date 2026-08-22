@@ -340,6 +340,91 @@ fn signed_duration_parse_rejects_malformed_input() {
 }
 
 #[test]
+fn duration_round_trips_through_display() {
+  for tb in timebases() {
+    for ticks in [0u64, 1, 12_345, 1500, u64::MAX] {
+      let d = Duration::new(ticks, tb);
+      // `{}` and `{:#}` are the same rendering for this type, so both invert.
+      for rendered in [format!("{d}"), format!("{d:#}")] {
+        let parsed: Duration = rendered.parse().expect("Display output parses back");
+        assert_eq!(parsed, d);
+        assert_same_fields(&parsed, &d);
+      }
+    }
+  }
+}
+
+#[test]
+fn duration_parse_trims_whitespace_and_reads_a_timebase_name() {
+  let expected = Duration::new(1500, Timebase::MILLIS);
+  for s in [
+    "1500 @ 1/1000",
+    "1500@1/1000",
+    "  1500  @  1/1000  ",
+    // The timebase half goes through `Timebase`'s impl, so it inherits both
+    // the roster arm and its ASCII folding.
+    "1500 @ MILLIS",
+    "1500 @ millis",
+  ] {
+    assert_same_fields(&s.parse::<Duration>().expect("parses"), &expected);
+  }
+
+  // A name on the way in is a rational on the way out, and stays one: the
+  // second pass has nothing left to change.
+  let once = "1500 @ MILLIS".parse::<Duration>().expect("parses");
+  assert_eq!(format!("{once}"), "1500 @ 1/1000");
+  assert_same_fields(
+    &format!("{once}").parse::<Duration>().expect("parses"),
+    &once,
+  );
+}
+
+#[test]
+fn duration_shares_a_rendering_with_timestamp_and_signed_duration_and_not_a_parser() {
+  // Three types, one shape whenever the count is non-negative: the string
+  // alone cannot say which was printed, the type asked for decides, and each
+  // rejects with its own error.
+  let unsigned = Duration::new(1500, Timebase::MILLIS);
+  let signed = SignedDuration::new(1500, Timebase::MILLIS);
+  let instant = Timestamp::new(1500, Timebase::MILLIS);
+  assert_eq!(format!("{unsigned}"), format!("{signed}"));
+  assert_eq!(format!("{unsigned}"), format!("{instant:#}"));
+
+  assert_same_fields(
+    &format!("{signed}").parse::<Duration>().expect("parses"),
+    &unsigned,
+  );
+  assert_same_fields(
+    &format!("{instant:#}").parse::<Duration>().expect("parses"),
+    &unsigned,
+  );
+  assert_eq!(
+    "0:00:01.500".parse::<Duration>(),
+    Err(ParseDurationError(()))
+  );
+}
+
+#[test]
+fn duration_parse_rejects_malformed_input() {
+  for s in [
+    "",
+    "1500",
+    "@1/1000",
+    "1500 @",
+    "1500 @ 1/1000 @ 2",
+    "abc @ 1/1000",
+    "1500 @ -1/1000",
+    "1.5 @ 1/1000",
+    // A `Duration` has no sign to write or to read.
+    "-1500 @ 1/1000",
+    // Beyond `u64`.
+    "18446744073709551616 @ 1/1000",
+  ] {
+    assert_eq!(s.parse::<Duration>(), Err(ParseDurationError(())), "{s}");
+  }
+}
+
+#[test]
 fn rate_round_trips_through_display() {
   for tb in timebases() {
     let rate = Rate::fps(tb.num(), tb.den());
@@ -447,6 +532,10 @@ fn parse_errors_name_the_grammar_they_wanted() {
   assert_eq!(
     message(&ParseSignedDurationError(())),
     "expected a signed duration `ticks @ num/den`"
+  );
+  assert_eq!(
+    message(&ParseDurationError(())),
+    "expected a duration `ticks @ num/den`"
   );
   assert_eq!(
     message(&ParseRateError(())),
