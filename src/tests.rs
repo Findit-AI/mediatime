@@ -146,7 +146,7 @@ fn checked_recip_swaps_the_halves() {
   // The reciprocal read as a frame rate is the rate the constant is named for.
   assert_eq!(
     Rate::fps(fps.num(), fps.den()).checked_frames_to_duration(24),
-    Some(Duration::from_secs(1))
+    Some(StdDuration::from_secs(1))
   );
 
   // Round trip, structurally: nothing is reduced or normalized on the way.
@@ -386,17 +386,17 @@ fn rescale_to_preserves_instant() {
 fn timestamp_duration_from_zero() {
   let ms = Timebase::new(1, nz(1000));
   let ts = Timestamp::new(1500, ms);
-  assert_eq!(ts.duration(), Some(Duration::from_millis(1500)));
-  assert_eq!(Timestamp::new(0, ms).duration(), Some(Duration::ZERO));
+  assert_eq!(ts.duration(), Some(StdDuration::from_millis(1500)));
+  assert_eq!(Timestamp::new(0, ms).duration(), Some(StdDuration::ZERO));
 
   // Cross-timebase equivalence: same instant, same duration.
   let mpeg = Timebase::new(1, nz(90_000));
   assert_eq!(
     Timestamp::new(90_000, mpeg).duration(),
-    Some(Duration::from_secs(1))
+    Some(StdDuration::from_secs(1))
   );
 
-  // Negative PTS (pre-roll) has no Duration representation.
+  // Negative PTS (pre-roll) has no StdDuration representation.
   assert_eq!(Timestamp::new(-1, ms).duration(), None);
 }
 
@@ -405,7 +405,7 @@ fn duration_since_same_timebase() {
   let tb = Timebase::new(1, nz(1000));
   let a = Timestamp::new(1500, tb);
   let b = Timestamp::new(500, tb);
-  assert_eq!(a.duration_since(&b), Some(Duration::from_millis(1000)));
+  assert_eq!(a.duration_since(&b), Some(StdDuration::from_millis(1000)));
   assert_eq!(b.duration_since(&a), None);
 }
 
@@ -413,18 +413,18 @@ fn duration_since_same_timebase() {
 fn duration_since_cross_timebase() {
   let a = Timestamp::new(1000, Timebase::new(1, nz(1000)));
   let b = Timestamp::new(45_000, Timebase::new(1, nz(90_000)));
-  assert_eq!(a.duration_since(&b), Some(Duration::from_millis(500)));
+  assert_eq!(a.duration_since(&b), Some(StdDuration::from_millis(500)));
 }
 
 #[test]
 fn duration_since_saturates_to_duration_max_on_overflow() {
   // Use a timebase of `i32::MAX / 1` (each tick ≈ 2^31 seconds). Then
   // i64::MAX ticks ≈ 2^94 seconds — far more than u64::MAX. Should
-  // saturate to Duration::MAX rather than wrap when casting seconds to u64.
+  // saturate to StdDuration::MAX rather than wrap when casting seconds to u64.
   let tb = Timebase::new(i32::MAX, nz(1));
   let huge = Timestamp::new(i64::MAX, tb);
   let zero = Timestamp::new(0, tb);
-  assert_eq!(huge.duration_since(&zero), Some(Duration::MAX));
+  assert_eq!(huge.duration_since(&zero), Some(StdDuration::MAX));
 }
 
 #[test]
@@ -432,16 +432,16 @@ fn frames_to_duration_integer_fps() {
   let fps30 = Rate::hz(30);
   assert_eq!(
     fps30.checked_frames_to_duration(15),
-    Some(Duration::from_millis(500))
+    Some(StdDuration::from_millis(500))
   );
   assert_eq!(
     fps30.checked_frames_to_duration(30),
-    Some(Duration::from_secs(1))
+    Some(StdDuration::from_secs(1))
   );
-  assert_eq!(fps30.checked_frames_to_duration(0), Some(Duration::ZERO));
+  assert_eq!(fps30.checked_frames_to_duration(0), Some(StdDuration::ZERO));
   assert_eq!(
     fps30.saturating_frames_to_duration(15),
-    Duration::from_millis(500)
+    StdDuration::from_millis(500)
   );
 }
 
@@ -451,40 +451,40 @@ fn frames_to_duration_ntsc() {
   let ntsc = Rate::fps(30_000, nz(1001));
   assert_eq!(
     ntsc.checked_frames_to_duration(30_000),
-    Some(Duration::from_secs(1001))
+    Some(StdDuration::from_secs(1001))
   );
   // 15 frames at NTSC ≈ 500.5 ms.
   assert_eq!(
     ntsc.checked_frames_to_duration(15),
-    Some(Duration::from_nanos(500_500_000))
+    Some(StdDuration::from_nanos(500_500_000))
   );
 }
 
 #[test]
 fn frames_to_duration_refuses_or_clamps_what_no_duration_holds() {
   let fps30 = Rate::hz(30);
-  // A negative frame count has no `Duration`; the saturating rung clamps to
+  // A negative frame count has no `StdDuration`; the saturating rung clamps to
   // the floor of the type, as the tick conversion it delegates to does.
   assert_eq!(fps30.checked_frames_to_duration(-1), None);
-  assert_eq!(fps30.saturating_frames_to_duration(-1), Duration::ZERO);
+  assert_eq!(fps30.saturating_frames_to_duration(-1), StdDuration::ZERO);
 
-  // Past `Duration::MAX`: one event per `i32::MAX` seconds, `i64::MAX` of
+  // Past `StdDuration::MAX`: one event per `i32::MAX` seconds, `i64::MAX` of
   // them.
   let glacial = Rate::fps(1, nz(i32::MAX));
   assert_eq!(glacial.checked_frames_to_duration(i64::MAX), None);
   assert_eq!(
     glacial.saturating_frames_to_duration(i64::MAX),
-    Duration::MAX
+    StdDuration::MAX
   );
 
   // Rounding is the crate's: 1 frame at 3 fps is 333333333.33… ns.
   assert_eq!(
     Rate::hz(3).checked_frames_to_duration(1),
-    Some(Duration::from_nanos(333_333_333))
+    Some(StdDuration::from_nanos(333_333_333))
   );
   assert_eq!(
     Rate::hz(3).checked_frames_to_duration(2),
-    Some(Duration::from_nanos(666_666_667))
+    Some(StdDuration::from_nanos(666_666_667))
   );
 }
 
@@ -656,7 +656,7 @@ fn time_range_basic() {
   assert_eq!(r.start(), Timestamp::new(100, tb));
   assert_eq!(r.end(), Timestamp::new(500, tb));
   assert!(!r.is_instant());
-  assert_eq!(r.duration(), Duration::from_millis(400));
+  assert_eq!(r.duration(), StdDuration::from_millis(400));
   // Interpolate: t=0 → start, t=1 → end, t=0.5 → midpoint.
   assert_eq!(r.interpolate(0.0).pts(), 100);
   assert_eq!(r.interpolate(1.0).pts(), 500);
@@ -678,7 +678,7 @@ fn time_range_instant() {
   assert!(r.is_instant());
   assert_eq!(r.start_pts(), 123);
   assert_eq!(r.end_pts(), 123);
-  assert_eq!(r.duration(), Duration::ZERO);
+  assert_eq!(r.duration(), StdDuration::ZERO);
 }
 
 // -------------------------------------------------------------------------
@@ -749,7 +749,7 @@ fn the_well_known_roster_holds_the_rationals_it_names() {
   // side of.
   assert_eq!(
     Rate::from_timebase(Timebase::NTSC_VIDEO).checked_frames_to_duration(30_000),
-    Some(Duration::from_secs(1001))
+    Some(StdDuration::from_secs(1001))
   );
 
   // The two families' nearest miss: the 24 kHz sample interval and the 23.976
@@ -937,22 +937,22 @@ fn duration_to_pts_happy_path_and_edge_cases() {
   // Integer conversion: 1.5 s @ 1/1000 → 1500 units.
   let ms = Timebase::MILLIS;
   assert_eq!(
-    ms.checked_duration_to_pts(Duration::from_millis(1500)),
+    ms.checked_duration_to_pts(StdDuration::from_millis(1500)),
     Some(1500)
   );
-  assert_eq!(ms.checked_duration_to_pts(Duration::ZERO), Some(0));
+  assert_eq!(ms.checked_duration_to_pts(StdDuration::ZERO), Some(0));
 
   // Non-ms timebase: 2 s @ 1/90_000 → 180_000 units.
   assert_eq!(
-    Timebase::MPEG_90K.checked_duration_to_pts(Duration::from_secs(2)),
+    Timebase::MPEG_90K.checked_duration_to_pts(StdDuration::from_secs(2)),
     Some(180_000)
   );
 
   // Saturation at i64::MAX when the count would overflow — and the checked
   // rung refusing where the saturating one clamps. One tick per second
-  // against the longest `Duration` there is: ~1.8e19 ticks against 9.2e18.
+  // against the longest `StdDuration` there is: ~1.8e19 ticks against 9.2e18.
   let seconds = Timebase::SECONDS;
-  let huge = Duration::new(u64::MAX, 0);
+  let huge = StdDuration::new(u64::MAX, 0);
   assert_eq!(seconds.checked_duration_to_pts(huge), None);
   assert_eq!(seconds.saturating_duration_to_pts(huge), i64::MAX);
 }
@@ -963,21 +963,24 @@ fn duration_to_pts_rounds_to_nearest() {
   // where the truncating conversion this replaced said 1.
   let ms = Timebase::MILLIS;
   assert_eq!(
-    ms.checked_duration_to_pts(Duration::from_nanos(1_500_000)),
+    ms.checked_duration_to_pts(StdDuration::from_nanos(1_500_000)),
     Some(2)
   );
   assert_eq!(
-    ms.checked_duration_to_pts(Duration::from_nanos(1_400_000)),
+    ms.checked_duration_to_pts(StdDuration::from_nanos(1_400_000)),
     Some(1)
   );
   assert_eq!(
-    ms.checked_duration_to_pts(Duration::from_nanos(1_600_000)),
+    ms.checked_duration_to_pts(StdDuration::from_nanos(1_600_000)),
     Some(2)
   );
   // Sub-tick durations round to the nearest tick rather than vanishing.
-  assert_eq!(ms.checked_duration_to_pts(Duration::from_nanos(1)), Some(0));
   assert_eq!(
-    ms.checked_duration_to_pts(Duration::from_nanos(999_999)),
+    ms.checked_duration_to_pts(StdDuration::from_nanos(1)),
+    Some(0)
+  );
+  assert_eq!(
+    ms.checked_duration_to_pts(StdDuration::from_nanos(999_999)),
     Some(1)
   );
 }
@@ -990,10 +993,10 @@ fn duration_to_pts_refuses_a_degenerate_timebase() {
   // target the same way, at `pts = 0` included.
   let degenerate = Timebase::new(0, nz(3));
   assert_eq!(
-    degenerate.checked_duration_to_pts(Duration::from_secs(1)),
+    degenerate.checked_duration_to_pts(StdDuration::from_secs(1)),
     None
   );
-  assert_eq!(degenerate.checked_duration_to_pts(Duration::ZERO), None);
+  assert_eq!(degenerate.checked_duration_to_pts(StdDuration::ZERO), None);
 }
 
 #[test]
@@ -1002,8 +1005,8 @@ fn saturating_duration_to_pts_panics_on_a_degenerate_timebase() {
   // The other rung of the same ladder panics on the same degeneracy, in the
   // same words: saturation is a posture toward overflow, and a degenerate
   // timebase leaves nothing to clamp. It answered `0` before, which was the
-  // honest count only for `Duration::ZERO`.
-  Timebase::new(0, nz(3)).saturating_duration_to_pts(Duration::from_secs(1));
+  // honest count only for `StdDuration::ZERO`.
+  Timebase::new(0, nz(3)).saturating_duration_to_pts(StdDuration::from_secs(1));
 }
 
 #[test]
@@ -1011,7 +1014,7 @@ fn saturating_duration_to_pts_panics_on_a_degenerate_timebase() {
 fn saturating_duration_to_pts_panics_on_a_degenerate_timebase_for_zero_too() {
   // Not even the duration whose old answer was right: the refusal is about
   // the timebase.
-  Timebase::new(0, nz(3)).saturating_duration_to_pts(Duration::ZERO);
+  Timebase::new(0, nz(3)).saturating_duration_to_pts(StdDuration::ZERO);
 }
 
 #[test]
@@ -1019,43 +1022,46 @@ fn pts_to_duration_inverts_duration_to_pts() {
   let ms = Timebase::MILLIS;
   assert_eq!(
     ms.checked_pts_to_duration(1500),
-    Some(Duration::from_millis(1500))
+    Some(StdDuration::from_millis(1500))
   );
-  assert_eq!(ms.checked_pts_to_duration(0), Some(Duration::ZERO));
+  assert_eq!(ms.checked_pts_to_duration(0), Some(StdDuration::ZERO));
   assert_eq!(
     Timebase::MPEG_90K.checked_pts_to_duration(45_000),
-    Some(Duration::from_millis(500))
+    Some(StdDuration::from_millis(500))
   );
 
   // One MPEG tick is 11111.11… ns, and the nearest whole nanosecond is what
-  // a `Duration` can hold.
+  // a `StdDuration` can hold.
   assert_eq!(
     Timebase::MPEG_90K.checked_pts_to_duration(1),
-    Some(Duration::from_nanos(11_111))
+    Some(StdDuration::from_nanos(11_111))
   );
 
   // A degenerate timebase is *not* a failure in this direction: all its ticks
-  // are instant zero, and zero is a `Duration`.
+  // are instant zero, and zero is a `StdDuration`.
   assert_eq!(
     Timebase::new(0, nz(3)).checked_pts_to_duration(999),
-    Some(Duration::ZERO)
+    Some(StdDuration::ZERO)
   );
 }
 
 #[test]
 fn pts_to_duration_saturates_at_both_ends_of_a_duration() {
   let ms = Timebase::MILLIS;
-  // A negative PTS is ordinary (pre-roll, edit lists) and has no `Duration`;
+  // A negative PTS is ordinary (pre-roll, edit lists) and has no `StdDuration`;
   // the saturating rung clamps to the floor of the type.
   assert_eq!(ms.checked_pts_to_duration(-1), None);
-  assert_eq!(ms.saturating_pts_to_duration(-1), Duration::ZERO);
-  assert_eq!(ms.saturating_pts_to_duration(i64::MIN), Duration::ZERO);
+  assert_eq!(ms.saturating_pts_to_duration(-1), StdDuration::ZERO);
+  assert_eq!(ms.saturating_pts_to_duration(i64::MIN), StdDuration::ZERO);
 
   // Past the ceiling: i32::MAX seconds per tick, i64::MAX ticks — about 2^94
   // seconds against a u64 seconds field.
   let coarse = Timebase::new(i32::MAX, nz(1));
   assert_eq!(coarse.checked_pts_to_duration(i64::MAX), None);
-  assert_eq!(coarse.saturating_pts_to_duration(i64::MAX), Duration::MAX);
+  assert_eq!(
+    coarse.saturating_pts_to_duration(i64::MAX),
+    StdDuration::MAX
+  );
 }
 
 #[test]
@@ -1105,12 +1111,12 @@ fn saturating_sub_duration_saturates() {
   // Subtracting a finite duration from a small pts shouldn't panic —
   // it saturates at i64::MIN for pathological inputs.
   let near_floor = Timestamp::new(i64::MIN + 10, tb);
-  let shifted = near_floor.saturating_sub_duration(Duration::from_secs(1));
+  let shifted = near_floor.saturating_sub_duration(StdDuration::from_secs(1));
   assert_eq!(shifted.pts(), i64::MIN);
 
   // Normal case: 1500 ms - 500 ms → 1000 ms.
   let ts = Timestamp::new(1500, tb);
-  let shifted = ts.saturating_sub_duration(Duration::from_millis(500));
+  let shifted = ts.saturating_sub_duration(StdDuration::from_millis(500));
   assert_eq!(shifted.pts(), 1000);
 }
 
@@ -1120,11 +1126,11 @@ fn saturating_add_duration_is_the_forward_twin() {
 
   // Normal case, and the round trip back through the backward twin.
   let ts = Timestamp::new(1500, tb);
-  let shifted = ts.saturating_add_duration(Duration::from_millis(500));
+  let shifted = ts.saturating_add_duration(StdDuration::from_millis(500));
   assert_eq!(shifted.pts(), 2000);
   assert_eq!(shifted.timebase(), tb);
   assert_eq!(
-    shifted.saturating_sub_duration(Duration::from_millis(500)),
+    shifted.saturating_sub_duration(StdDuration::from_millis(500)),
     ts
   );
 
@@ -1132,7 +1138,7 @@ fn saturating_add_duration_is_the_forward_twin() {
   let near_ceiling = Timestamp::new(i64::MAX - 10, tb);
   assert_eq!(
     near_ceiling
-      .saturating_add_duration(Duration::from_secs(1))
+      .saturating_add_duration(StdDuration::from_secs(1))
       .pts(),
     i64::MAX
   );
@@ -1141,13 +1147,13 @@ fn saturating_add_duration_is_the_forward_twin() {
   // `saturating_duration_to_pts`, before the addition ever runs.
   assert_eq!(
     Timestamp::new(0, tb)
-      .saturating_add_duration(Duration::MAX)
+      .saturating_add_duration(StdDuration::MAX)
       .pts(),
     i64::MAX
   );
 
   // Zero is the identity.
-  assert_eq!(ts.saturating_add_duration(Duration::ZERO), ts);
+  assert_eq!(ts.saturating_add_duration(StdDuration::ZERO), ts);
 }
 
 #[test]
@@ -1156,13 +1162,13 @@ fn saturating_add_duration_panics_on_a_degenerate_timebase() {
   // It was a no-op here while `saturating_duration_to_pts` answered `0`;
   // that conversion now refuses the degenerate timebase, and the shift
   // built on it inherits the refusal rather than pretending to have moved.
-  Timestamp::new(7, Timebase::new(0, nz(3))).saturating_add_duration(Duration::from_secs(1));
+  Timestamp::new(7, Timebase::new(0, nz(3))).saturating_add_duration(StdDuration::from_secs(1));
 }
 
 #[test]
 #[should_panic(expected = "target timebase numerator must be non-zero")]
 fn saturating_sub_duration_panics_on_a_degenerate_timebase() {
-  Timestamp::new(7, Timebase::new(0, nz(3))).saturating_sub_duration(Duration::from_secs(1));
+  Timestamp::new(7, Timebase::new(0, nz(3))).saturating_sub_duration(StdDuration::from_secs(1));
 }
 
 #[test]
@@ -1423,6 +1429,357 @@ fn signed_duration_cmp_semantic_stays_transitive_on_degenerate_timebases() {
 }
 
 #[test]
+fn duration_accessors_and_predicates() {
+  let ms = Timebase::MILLIS;
+  let some = Duration::new(1500, ms);
+  assert_eq!(some.ticks(), 1500);
+  assert_eq!(some.timebase(), ms);
+  assert!(!some.is_zero());
+
+  let none = Duration::new(0, ms);
+  assert!(none.is_zero());
+
+  // The default is the zero span, in the default timebase.
+  assert_eq!(Duration::default().ticks(), 0);
+  assert_eq!(Duration::default().timebase(), Timebase::default());
+}
+
+#[test]
+fn duration_add_and_sub_in_one_timebase_are_exact() {
+  let ms = Timebase::MILLIS;
+  let a = Duration::new(1500, ms);
+  let b = Duration::new(500, ms);
+  assert_eq!(a.checked_add(b), Some(Duration::new(2000, ms)));
+  assert_eq!(a.saturating_add(b), Duration::new(2000, ms));
+  assert_eq!(a.checked_sub(b), Some(Duration::new(1000, ms)));
+  assert_eq!(a.saturating_sub(b), Duration::new(1000, ms));
+
+  // Addition and subtraction undo each other exactly here.
+  assert_eq!(a.checked_add(b).unwrap().checked_sub(b), Some(a));
+}
+
+#[test]
+fn duration_sub_refuses_and_clamps_where_rhs_is_longer() {
+  // The one refusal `SignedDuration` does not have: an unsigned span cannot
+  // hold a negative difference, so this is `u64::checked_sub`'s ordinary
+  // posture, not a pathological edge.
+  let ms = Timebase::MILLIS;
+  let short = Duration::new(500, ms);
+  let long = Duration::new(1500, ms);
+  assert_eq!(short.checked_sub(long), None);
+  assert_eq!(short.saturating_sub(long), Duration::new(0, ms));
+}
+
+#[test]
+fn duration_arithmetic_answers_in_the_left_timebase() {
+  let ms = Timebase::MILLIS;
+  let mpeg = Timebase::MPEG_90K;
+
+  // One second either way, counted on whichever clock is on the left.
+  let in_ms = Duration::new(1000, ms)
+    .checked_add(Duration::new(90_000, mpeg))
+    .expect("both spans fit");
+  assert_eq!(in_ms, Duration::new(2000, ms));
+
+  let in_mpeg = Duration::new(90_000, mpeg)
+    .checked_add(Duration::new(1000, ms))
+    .expect("both spans fit");
+  assert_eq!(in_mpeg, Duration::new(180_000, mpeg));
+
+  // The same span, at two resolutions.
+  assert!(in_ms.cmp_semantic(&in_mpeg).is_eq());
+
+  // A coarse left operand rounds the finer right one, to nearest and away
+  // from zero: half a tick of 1/3 s lands on the far side of the tie.
+  let thirds = Timebase::new(1, nz(3));
+  let zero = Duration::new(0, thirds);
+  assert_eq!(
+    zero.checked_add(Duration::new(500, ms)),
+    Some(Duration::new(2, thirds))
+  );
+}
+
+#[test]
+fn duration_arithmetic_saturates_where_the_checked_rung_refuses() {
+  let ms = Timebase::MILLIS;
+  let ceiling = Duration::new(u64::MAX, ms);
+  let one = Duration::new(1, ms);
+
+  assert_eq!(ceiling.checked_add(one), None);
+  assert_eq!(ceiling.saturating_add(one), ceiling);
+
+  // The rescale can refuse before the addition does: `i32::MAX` seconds per
+  // tick into `1/i32::MAX` seconds per tick is far past `u64`.
+  let coarse = Duration::new(1_000_000, Timebase::new(i32::MAX, nz(1)));
+  let fine = Duration::new(0, Timebase::new(1, nz(i32::MAX)));
+  assert_eq!(fine.checked_add(coarse), None);
+  assert_eq!(fine.saturating_add(coarse).ticks(), u64::MAX);
+}
+
+#[test]
+fn duration_arithmetic_and_the_degenerate_timebase() {
+  // Two spans counted in one degenerate timebase add without a conversion,
+  // so there is nothing to refuse: tick plus tick is exact.
+  let degenerate = Timebase::new(0, nz(3));
+  let a = Duration::new(5, degenerate);
+  let b = Duration::new(2, degenerate);
+  assert_eq!(a.checked_add(b), Some(Duration::new(7, degenerate)));
+  assert_eq!(a.saturating_add(b), Duration::new(7, degenerate));
+
+  // A *differing* timebase needs the rescale that a degenerate target
+  // refuses — even another degenerate one.
+  let elsewhere = Duration::new(2, Timebase::new(0, nz(5)));
+  assert_eq!(a.checked_add(elsewhere), None);
+  assert_eq!(a.checked_sub(elsewhere), None);
+  assert_eq!(a.checked_add(Duration::new(2, Timebase::MILLIS)), None);
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn duration_saturating_add_panics_on_a_degenerate_left_timebase() {
+  let degenerate = Duration::new(5, Timebase::new(0, nz(3)));
+  degenerate.saturating_add(Duration::new(2, Timebase::MILLIS));
+}
+
+#[test]
+fn duration_rescale_to_and_its_checked_rung() {
+  let ms = Timebase::MILLIS;
+  let mpeg = Timebase::MPEG_90K;
+  let forward = Duration::new(1000, ms);
+  assert_eq!(forward.rescale_to(mpeg), Duration::new(90_000, mpeg));
+  assert_eq!(
+    forward.checked_rescale_to(mpeg),
+    Some(Duration::new(90_000, mpeg))
+  );
+
+  // The checked rung refuses what the bare one clamps or panics on.
+  let coarse = Duration::new(1_000_000, Timebase::new(i32::MAX, nz(1)));
+  let fine = Timebase::new(1, nz(i32::MAX));
+  assert_eq!(coarse.checked_rescale_to(fine), None);
+  assert_eq!(coarse.rescale_to(fine).ticks(), u64::MAX);
+  assert_eq!(forward.checked_rescale_to(Timebase::new(0, nz(3))), None);
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn duration_rescale_to_panics_on_a_degenerate_target() {
+  Duration::new(1000, Timebase::MILLIS).rescale_to(Timebase::new(0, nz(3)));
+}
+
+#[test]
+fn duration_equality_is_structural_and_cmp_semantic_is_not() {
+  let one_second = Duration::new(1, Timebase::SECONDS);
+  let one_thousand_ms = Duration::new(1_000, Timebase::MILLIS);
+
+  // The same span, counted differently: unequal, and semantically equal.
+  assert_ne!(one_second, one_thousand_ms);
+  assert!(one_second.cmp_semantic(&one_thousand_ms).is_eq());
+
+  // Only the timebase is compared by value, as `Timebase`'s own `==` does —
+  // and `Hash` follows that equality.
+  let declared = Duration::new(1_000, Timebase::new(2, nz(2000)));
+  assert_eq!(one_thousand_ms, declared);
+  assert_eq!(hash_of(&one_thousand_ms), hash_of(&declared));
+}
+
+#[test]
+fn durations_sort_by_length_only_when_asked_to() {
+  // Two spellings of one second, a longer span and a shorter one, deliberately
+  // mixed: the count alone puts `2 @ 1/1` below `1000 @ 1/1000`, which is the
+  // order a derived `Ord` would have handed out and the reason there is none.
+  let mut spans = [
+    Duration::new(2, Timebase::SECONDS),
+    Duration::new(1_000, Timebase::MILLIS),
+    Duration::new(0, Timebase::SECONDS),
+    Duration::new(1, Timebase::SECONDS),
+    Duration::new(500, Timebase::MILLIS),
+  ];
+  spans.sort_by(Duration::cmp_semantic);
+
+  // 0s, 500ms, then the two one-second spans in the order they were written
+  // (`sort_by` is stable and calls them equal), then 2s.
+  assert_eq!(spans[0].ticks(), 0);
+  assert_eq!(spans[1].ticks(), 500);
+  assert_eq!(spans[2], Duration::new(1_000, Timebase::MILLIS));
+  assert_eq!(spans[3], Duration::new(1, Timebase::SECONDS));
+  assert_eq!(spans[4].ticks(), 2);
+
+  for (i, shorter) in spans.iter().enumerate() {
+    for longer in &spans[i + 1..] {
+      assert!(shorter.cmp_semantic(longer).is_le());
+    }
+  }
+}
+
+#[test]
+fn duration_cmp_semantic_orders_by_measured_span() {
+  let ms = Timebase::MILLIS;
+  let mpeg = Timebase::MPEG_90K;
+  assert_eq!(
+    Duration::new(0, ms).cmp_semantic(&Duration::new(1, ms)),
+    Ordering::Less
+  );
+  assert_eq!(
+    Duration::new(90_000, mpeg).cmp_semantic(&Duration::new(1000, ms)),
+    Ordering::Equal
+  );
+  assert_eq!(
+    Duration::new(90_001, mpeg).cmp_semantic(&Duration::new(1000, ms)),
+    Ordering::Greater
+  );
+  assert_eq!(
+    Duration::new(500, ms).cmp_semantic(&Duration::new(90_000, mpeg)),
+    Ordering::Less
+  );
+}
+
+#[test]
+fn duration_cmp_semantic_stays_transitive_on_degenerate_timebases() {
+  // Every count of a `0/den` tick measures zero, so all three of these are
+  // the same span, exactly as `SignedDuration`'s do.
+  let a = Duration::new(1, Timebase::new(0, nz(3)));
+  let b = Duration::new(2, Timebase::new(0, nz(3)));
+  let c = Duration::new(1, Timebase::new(0, nz(5)));
+  assert!(a.cmp_semantic(&b).is_eq());
+  assert!(b.cmp_semantic(&c).is_eq());
+  assert!(a.cmp_semantic(&c).is_eq());
+}
+
+#[test]
+fn duration_std_round_trip() {
+  let ms = Timebase::MILLIS;
+  assert_eq!(
+    Duration::checked_from_std(StdDuration::from_millis(1500), ms),
+    Some(Duration::new(1500, ms))
+  );
+  assert_eq!(
+    Duration::checked_from_std(StdDuration::ZERO, ms),
+    Some(Duration::new(0, ms))
+  );
+  assert_eq!(
+    Duration::new(1500, ms).checked_to_std(),
+    Some(StdDuration::from_millis(1500))
+  );
+  assert_eq!(
+    Duration::new(1500, ms).saturating_to_std(),
+    StdDuration::from_millis(1500)
+  );
+
+  // Round trip through a whole-nanosecond-tick timebase is exact.
+  let span = Duration::new(2_500_000_000, Timebase::NANOS);
+  assert_eq!(
+    span
+      .checked_to_std()
+      .and_then(|d| Duration::checked_from_std(d, Timebase::NANOS)),
+    Some(span)
+  );
+}
+
+#[test]
+fn duration_from_std_refuses_a_degenerate_timebase_but_to_std_does_not() {
+  let degenerate = Timebase::new(0, nz(3));
+  assert_eq!(
+    Duration::checked_from_std(StdDuration::from_secs(1), degenerate),
+    None
+  );
+  // Not a failure in this direction: every tick of a degenerate timebase
+  // lands on the same instant, and `StdDuration::ZERO` is that instant —
+  // exactly `Timebase::checked_pts_to_duration`'s posture.
+  assert_eq!(
+    Duration::new(1234, degenerate).checked_to_std(),
+    Some(StdDuration::ZERO)
+  );
+}
+
+#[test]
+#[should_panic(expected = "target timebase numerator must be non-zero")]
+fn duration_saturating_from_std_panics_on_a_degenerate_timebase() {
+  Duration::saturating_from_std(StdDuration::from_secs(1), Timebase::new(0, nz(3)));
+}
+
+#[test]
+fn duration_from_std_reaches_past_i64_max_ticks_where_the_pts_family_cannot() {
+  // 1e19 nanoseconds: between `i64::MAX` (~9.22e18) and `u64::MAX`
+  // (~1.84e19). `Timebase::checked_duration_to_pts` refuses this input on
+  // its `i64` ceiling; `Duration::checked_from_std` answers it, which is the
+  // whole reason the timebase-conversion family gained a `u64` rung instead
+  // of `Duration` slotting into the existing `i64`-bound one.
+  let d = StdDuration::new(10_000_000_000, 0);
+  assert_eq!(Timebase::NANOS.checked_duration_to_pts(d), None);
+  assert_eq!(
+    Duration::checked_from_std(d, Timebase::NANOS),
+    Some(Duration::new(10_000_000_000_000_000_000, Timebase::NANOS))
+  );
+}
+
+#[test]
+fn duration_from_std_saturates_at_u64_max_ticks() {
+  let fine = Timebase::new(1, nz(i32::MAX));
+  assert_eq!(Duration::checked_from_std(StdDuration::MAX, fine), None);
+  assert_eq!(
+    Duration::saturating_from_std(StdDuration::MAX, fine).ticks(),
+    u64::MAX
+  );
+}
+
+#[test]
+fn duration_to_std_saturates_at_duration_max() {
+  // A span whose seconds exceed `u64::MAX` cannot arise from
+  // `Duration::checked_from_std` at any timebase, but a wide-numerator one
+  // reaches it directly through `Duration::new`.
+  let absurd = Duration::new(u64::MAX, Timebase::new(i32::MAX, nz(1)));
+  assert_eq!(absurd.checked_to_std(), None);
+  assert_eq!(absurd.saturating_to_std(), StdDuration::MAX);
+}
+
+#[test]
+fn duration_signed_round_trip() {
+  let ms = Timebase::MILLIS;
+  assert_eq!(
+    Duration::checked_from_signed(SignedDuration::new(1500, ms)),
+    Some(Duration::new(1500, ms))
+  );
+  assert_eq!(
+    Duration::new(1500, ms).checked_to_signed(),
+    Some(SignedDuration::new(1500, ms))
+  );
+  assert_eq!(
+    Duration::new(1500, ms)
+      .checked_to_signed()
+      .and_then(Duration::checked_from_signed),
+    Some(Duration::new(1500, ms))
+  );
+}
+
+#[test]
+fn duration_from_signed_refuses_and_clamps_a_backward_span() {
+  let backward = SignedDuration::new(-1500, Timebase::MILLIS);
+  assert_eq!(Duration::checked_from_signed(backward), None);
+  assert_eq!(
+    Duration::saturating_from_signed(backward),
+    Duration::new(0, Timebase::MILLIS)
+  );
+}
+
+#[test]
+fn duration_to_signed_refuses_and_clamps_past_i64_max() {
+  let ms = Timebase::MILLIS;
+  let past_i64 = Duration::new(i64::MAX as u64 + 1, ms);
+  assert_eq!(past_i64.checked_to_signed(), None);
+  assert_eq!(
+    past_i64.saturating_to_signed(),
+    SignedDuration::new(i64::MAX, ms)
+  );
+
+  // At the boundary itself, both rungs agree.
+  let at_boundary = Duration::new(i64::MAX as u64, ms);
+  assert_eq!(
+    at_boundary.checked_to_signed(),
+    Some(SignedDuration::new(i64::MAX, ms))
+  );
+}
+
+#[test]
 fn timestamp_signed_duration_since_signs_the_difference() {
   let ms = Timebase::MILLIS;
   let later = Timestamp::new(1500, ms);
@@ -1573,7 +1930,7 @@ fn time_range_rescale_to() {
   assert_eq!(r2.start_pts(), 90_000);
   assert_eq!(r2.end_pts(), 180_000);
   assert_eq!(r2.timebase(), mpeg);
-  // Same span in Duration terms.
+  // Same span in StdDuration terms.
   assert_eq!(r.duration(), r2.duration());
   // Instant range stays instant.
   let inst = TimeRange::instant(Timestamp::new(500, ms));

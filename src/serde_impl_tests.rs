@@ -60,6 +60,16 @@ fn de_span(ticks: i64, num: i32, den: i32) -> Result<SignedDuration, Error> {
   ))
 }
 
+fn de_duration(ticks: i64, num: i32, den: i32) -> Result<Duration, Error> {
+  Duration::deserialize(MapDeserializer::new(
+    [
+      ("ticks", Field::Integer(ticks)),
+      ("timebase", Field::Timebase(num, den)),
+    ]
+    .into_iter(),
+  ))
+}
+
 fn de_range(start: i64, end: i64, num: i32, den: i32) -> Result<TimeRange, Error> {
   TimeRange::deserialize(MapDeserializer::new(
     [
@@ -150,6 +160,36 @@ fn signed_duration_field_names_are_unchanged() {
   let missing_timebase: Result<SignedDuration, Error> = SignedDuration::deserialize(
     MapDeserializer::new([("ticks", Field::Integer(0))].into_iter()),
   );
+  assert!(missing_timebase.is_err());
+}
+
+#[test]
+fn duration_deserialize_admits_the_full_unsigned_range() {
+  let ms = Timebase::new(1, nz(1000));
+  assert_eq!(de_duration(1500, 1, 1000).unwrap(), Duration::new(1500, ms));
+  assert_eq!(de_duration(0, 1, 1000).unwrap(), Duration::new(0, ms));
+  // The count has no invariant to enforce, exactly as `SignedDuration`'s
+  // does not, but the nested timebase keeps its own field validators.
+  assert!(de_duration(0, -1, 1000).is_err());
+  assert!(de_duration(0, 1, 0).is_err());
+  assert!(de_duration(0, 1, -1000).is_err());
+}
+
+#[test]
+fn duration_field_names_are_unchanged() {
+  // Both names are the compatibility surface, and both are required.
+  let renamed: Result<Duration, Error> = Duration::deserialize(MapDeserializer::new(
+    [
+      ("count", Field::Integer(0)),
+      ("timebase", Field::Timebase(1, 1000)),
+    ]
+    .into_iter(),
+  ));
+  assert!(renamed.is_err());
+
+  let missing_timebase: Result<Duration, Error> = Duration::deserialize(MapDeserializer::new(
+    [("ticks", Field::Integer(0))].into_iter(),
+  ));
   assert!(missing_timebase.is_err());
 }
 

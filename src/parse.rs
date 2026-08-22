@@ -1,14 +1,14 @@
-//! [`FromStr`] for the five time types, and the errors they reject with.
+//! [`FromStr`] for the six time types, and the errors they reject with.
 //!
 //! Each impl is the inverse of the type's **exact** rendering — the one
-//! `{:#}` writes, which is `{}` as well for [`Timebase`], [`Rate`] and
-//! [`SignedDuration`], whose renderings have nothing to expand into. That is
-//! the only rendering an inverse can exist for: [`Timestamp`]'s and
-//! [`TimeRange`]'s default `{}` form is a clock truncated to milliseconds that
-//! never names a timebase, so two different instants can share one rendering
-//! and no parser can tell which was meant. Accepting it would mint a value
-//! that does not compare equal to the one printed. See each impl for its
-//! grammar.
+//! `{:#}` writes, which is `{}` as well for [`Timebase`], [`Rate`],
+//! [`SignedDuration`] and [`Duration`], whose renderings have nothing to
+//! expand into. That is the only rendering an inverse can exist for:
+//! [`Timestamp`]'s and [`TimeRange`]'s default `{}` form is a clock truncated
+//! to milliseconds that never names a timebase, so two different instants can
+//! share one rendering and no parser can tell which was meant. Accepting it
+//! would mint a value that does not compare equal to the one printed. See
+//! each impl for its grammar.
 //!
 //! Each type rejects with **its own** error, named for the vocabulary it
 //! wanted: a caller matching on a failed `Rate` parse should not have to read
@@ -16,7 +16,7 @@
 
 use core::{fmt, num::NonZeroI32, str::FromStr};
 
-use crate::{Rate, SignedDuration, TimeRange, Timebase, Timestamp};
+use crate::{Duration, Rate, SignedDuration, TimeRange, Timebase, Timestamp};
 
 /// The `num/den` half of the two rational grammars, scanned once so
 /// [`Timebase`] and [`Rate`] cannot drift apart in what they accept.
@@ -77,6 +77,22 @@ impl fmt::Display for ParseSignedDurationError {
 
 impl core::error::Error for ParseSignedDurationError {}
 
+/// Returned when a string is not a [`Duration`] rendering.
+///
+/// Distinct from [`ParseSignedDurationError`] although the two grammars are
+/// the same shape: an unsigned span and a signed one are different
+/// vocabularies, and the message says which one was expected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseDurationError(());
+
+impl fmt::Display for ParseDurationError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str("expected a duration `ticks @ num/den`")
+  }
+}
+
+impl core::error::Error for ParseDurationError {}
+
 /// Returned when a string is not a [`Rate`] rendering.
 ///
 /// Carries no detail, as [`ParseTimebaseError`] does not: the grammar is two
@@ -127,9 +143,10 @@ impl core::error::Error for ParseTimeRangeError {}
 /// `2/4` parses to a numerator of 2 over a denominator of 4, which is what was
 /// written, and what `Display` will write back.
 ///
-/// [`Timestamp`], [`TimeRange`] and [`SignedDuration`] parse their timebase
-/// half through this impl, so `12345 @ MPEG_90K` parses too. [`Rate`]'s roster
-/// is **not** read here, nor this one there — see that impl for why.
+/// [`Timestamp`], [`TimeRange`], [`SignedDuration`] and [`Duration`] parse
+/// their timebase half through this impl, so `12345 @ MPEG_90K` parses too.
+/// [`Rate`]'s roster is **not** read here, nor this one there — see that impl
+/// for why.
 ///
 /// # Errors
 ///
@@ -239,6 +256,30 @@ impl FromStr for SignedDuration {
     let err = ParseSignedDurationError(());
     let (ticks, timebase) = s.split_once('@').ok_or(err)?;
     let ticks = ticks.trim().parse::<i64>().map_err(|_| err)?;
+    let timebase = timebase.trim().parse::<Timebase>().map_err(|_| err)?;
+    Ok(Self::new(ticks, timebase))
+  }
+}
+
+/// Parses `ticks @ num/den` — the form [`Duration`]'s `Display` writes, under
+/// both `{}` and `{:#}`.
+///
+/// [`SignedDuration`]'s grammar over an unsigned count: whitespace around
+/// each part is trimmed, the timebase half goes through [`Timebase`]'s own
+/// impl, so `1500 @ MILLIS` parses. There is no leading `-` to trim here — a
+/// [`Duration`] never has one to write.
+///
+/// # Errors
+///
+/// Returns [`ParseDurationError`] if the `@` is missing, if the count is not
+/// a `u64`, or if the timebase half is not one [`Timebase`] accepts.
+impl FromStr for Duration {
+  type Err = ParseDurationError;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    let err = ParseDurationError(());
+    let (ticks, timebase) = s.split_once('@').ok_or(err)?;
+    let ticks = ticks.trim().parse::<u64>().map_err(|_| err)?;
     let timebase = timebase.trim().parse::<Timebase>().map_err(|_| err)?;
     Ok(Self::new(ticks, timebase))
   }

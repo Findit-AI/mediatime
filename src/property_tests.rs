@@ -169,20 +169,20 @@ quickcheck! {
     x == y && x == origin && hash_of(&x) == hash_of(&y) && hash_of(&x) == hash_of(&origin)
   }
 
-  /// `Duration` → ticks is the same conversion as a rescale out of
+  /// `StdDuration` → ticks is the same conversion as a rescale out of
   /// `Timebase::NANOS`, rounding and refusals included — two spellings of one
-  /// operation, which is what makes `NANOS` the timebase a `Duration` is
+  /// operation, which is what makes `NANOS` the timebase a `StdDuration` is
   /// counted in.
   ///
   /// The duration is drawn small enough for its nanosecond count to be an
-  /// `i64`, the one thing a rescale needs that a `Duration` does not carry.
+  /// `i64`, the one thing a rescale needs that a `StdDuration` does not carry.
   fn duration_to_pts_is_a_rescale_out_of_nanos(secs: u32, nanos: u32, tb: (u32, u32)) -> bool {
-    let d = Duration::new(secs as u64, nanos % 1_000_000_000);
+    let d = StdDuration::new(secs as u64, nanos % 1_000_000_000);
     let tb = any_timebase(tb);
     tb.checked_duration_to_pts(d) == Timebase::NANOS.checked_rescale(d.as_nanos() as i64, tb)
   }
 
-  /// Ticks → `Duration` inverts `Duration` → ticks exactly whenever a tick is
+  /// Ticks → `StdDuration` inverts `StdDuration` → ticks exactly whenever a tick is
   /// a whole number of nanoseconds — the case every roster timebase down to
   /// `NANOS` is in.
   fn pts_to_duration_inverts_on_whole_nanosecond_ticks(pts: u32, which: usize) -> bool {
@@ -213,7 +213,7 @@ quickcheck! {
   /// The `None` arm here must stay an arm and not become a call: `None`
   /// includes the degenerate timebase, where the saturating rung panics.
   fn the_duration_to_pts_rungs_agree(secs: u32, nanos: u32, tb: (u32, u32)) -> bool {
-    let d = Duration::new(secs as u64, nanos % 1_000_000_000);
+    let d = StdDuration::new(secs as u64, nanos % 1_000_000_000);
     let tb = any_timebase(tb);
     match tb.checked_duration_to_pts(d) {
       Some(q) => tb.saturating_duration_to_pts(d) == q,
@@ -351,6 +351,140 @@ quickcheck! {
     x.cmp_semantic(&y).is_eq() && x.cmp_semantic(&SignedDuration::new(0, any_timebase(tb))).is_eq()
   }
 
+  /// Adding a duration and subtracting the same one returns what it started
+  /// from — exactly, both counted in one timebase, the same law
+  /// `adding_a_span_and_subtracting_it_returns_the_first` states for the
+  /// signed sibling.
+  fn adding_a_duration_and_subtracting_it_returns_the_first(a: u64, b: u64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let (x, y) = (Duration::new(a, tb), Duration::new(b, tb));
+    match x.checked_add(y) {
+      Some(sum) => sum.checked_sub(y) == Some(x),
+      None => true,
+    }
+  }
+
+  /// In one timebase the sum (or difference) of two durations is exactly the
+  /// sum (or difference) of two `u64`s: the counts are combined, not
+  /// converted, so neither rung can round — `u64::checked_sub`'s `None` on
+  /// underflow included, since a `Duration` has no negative count to hold it.
+  fn durations_in_one_timebase_combine_as_u64s(a: u64, b: u64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let (x, y) = (Duration::new(a, tb), Duration::new(b, tb));
+    x.checked_add(y).map(|sum| sum.ticks()) == a.checked_add(b)
+      && x.saturating_add(y).ticks() == a.saturating_add(b)
+      && x.checked_sub(y).map(|d| d.ticks()) == a.checked_sub(b)
+      && x.saturating_sub(y).ticks() == a.saturating_sub(b)
+  }
+
+  /// Rescaling durations is monotone, so it agrees with `cmp_semantic` — the
+  /// law `rescaling_spans_preserves_semantic_order` states for the signed
+  /// sibling and `rescale_preserves_semantic_order` for instants, for the
+  /// same reason each gives, including why the counts are drawn as `u8`s.
+  fn rescaling_durations_preserves_semantic_order(a: (u8, u32, u32), b: (u8, u32, u32), to: (u32, u32)) -> bool {
+    let x = Duration::new(a.0 as u64, any_timebase((a.1, a.2)));
+    let y = Duration::new(b.0 as u64, any_timebase((b.1, b.2)));
+    let to = target_timebase(to);
+    let (rx, ry) = (x.rescale_to(to).ticks(), y.rescale_to(to).ticks());
+    match x.cmp_semantic(&y) {
+      Ordering::Less => rx <= ry,
+      Ordering::Greater => rx >= ry,
+      Ordering::Equal => rx == ry,
+    }
+  }
+
+  /// `cmp_semantic` is an order, degenerate timebases included — the
+  /// unsigned twin of `span_semantic_order_is_transitive`, drawn from the
+  /// same tiny pool for the same reason.
+  fn duration_semantic_order_is_transitive(a: (u8, u32, u32), b: (u8, u32, u32), c: (u8, u32, u32)) -> bool {
+    let span = |(t, num, den): (u8, u32, u32)| Duration::new(t as u64, coarse_timebase((num, den)));
+    let (x, y, z) = (span(a), span(b), span(c));
+    !(x.cmp_semantic(&y).is_le() && y.cmp_semantic(&z).is_le()) || x.cmp_semantic(&z).is_le()
+  }
+
+  /// Every count of a degenerate `0/den` tick measures zero seconds, so all
+  /// such durations compare equal — to each other, however each is written,
+  /// and to a zero duration anywhere else. The unsigned twin of
+  /// `every_span_in_a_degenerate_timebase_measures_zero`, degenerate **by
+  /// construction** for the same reason.
+  fn every_duration_in_a_degenerate_timebase_measures_zero(a: (u64, u32), b: (u64, u32), tb: (u32, u32)) -> bool {
+    let nowhere = |(ticks, den): (u64, u32)| Duration::new(ticks, Timebase::new(0, nz((den % 4 + 1) as i32)));
+    let (x, y) = (nowhere(a), nowhere(b));
+    x.cmp_semantic(&y).is_eq() && x.cmp_semantic(&Duration::new(0, any_timebase(tb))).is_eq()
+  }
+
+  /// The `Duration::checked_from_std`/`saturating_from_std` rungs agree
+  /// wherever the checked one answers — the same law
+  /// `the_duration_to_pts_rungs_agree` states for `Timebase`'s own `i64`
+  /// rung. The `None` arm must stay an arm and not become a call: it
+  /// includes the degenerate timebase, where the saturating rung panics.
+  fn the_duration_from_std_rungs_agree(secs: u32, nanos: u32, tb: (u32, u32)) -> bool {
+    let d = StdDuration::new(secs as u64, nanos % 1_000_000_000);
+    let tb = any_timebase(tb);
+    match Duration::checked_from_std(d, tb) {
+      Some(q) => Duration::saturating_from_std(d, tb) == q,
+      None => true,
+    }
+  }
+
+  /// The `Duration::checked_to_std`/`saturating_to_std` rungs agree wherever
+  /// the checked one answers.
+  fn the_duration_to_std_rungs_agree(ticks: u64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let d = Duration::new(ticks, tb);
+    match d.checked_to_std() {
+      Some(q) => d.saturating_to_std() == q,
+      None => true,
+    }
+  }
+
+  /// `Duration` → `StdDuration` inverts `StdDuration` → `Duration` exactly
+  /// whenever a tick is a whole number of nanoseconds — the case every
+  /// roster timebase down to `NANOS` is in, the same restriction
+  /// `pts_to_duration_inverts_on_whole_nanosecond_ticks` needs and for the
+  /// same reason: a tick *finer* than a nanosecond makes the round trip
+  /// lossy, the two legs' roundings disagreeing about where a tie falls.
+  /// (Measured without the restriction: `Duration::new(6, 1/1625000000)`
+  /// round-trips to `7`, both legs rounding correctly on their own terms.)
+  fn duration_std_round_trip_on_whole_nanosecond_ticks(ticks: u32, which: usize) -> bool {
+    const WHOLE_NANOSECOND_TICKS: &[Timebase] = &[
+      Timebase::SECONDS,
+      Timebase::MILLIS,
+      Timebase::MICROS,
+      Timebase::NANOS,
+      Timebase::FILM_24,
+      Timebase::PAL_25,
+      Timebase::HZ_48K,
+    ];
+    let tb = WHOLE_NANOSECOND_TICKS[which % WHOLE_NANOSECOND_TICKS.len()];
+    let d = Duration::new(ticks as u64, tb);
+    d.checked_to_std().and_then(|std| Duration::checked_from_std(std, tb)) == Some(d)
+  }
+
+  /// `Duration` → `SignedDuration` → `Duration` is the identity wherever the
+  /// first leg answers — the checked sign transition never moves the count
+  /// or the timebase, only the representation.
+  fn duration_signed_round_trip_is_the_identity_where_it_answers(ticks: u64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let d = Duration::new(ticks, tb);
+    match d.checked_to_signed() {
+      Some(signed) => Duration::checked_from_signed(signed) == Some(d),
+      None => true,
+    }
+  }
+
+  /// And the reverse leg: a non-negative `SignedDuration` round-trips through
+  /// `Duration` back to itself, structurally — the only `SignedDuration`
+  /// values `Duration::checked_from_signed` refuses are the negative ones.
+  fn signed_duration_round_trips_through_duration_when_non_negative(ticks: i64, tb: (u32, u32)) -> bool {
+    let tb = any_timebase(tb);
+    let s = SignedDuration::new(ticks, tb);
+    match Duration::checked_from_signed(s) {
+      Some(d) => d.checked_to_signed() == Some(s),
+      None => ticks < 0,
+    }
+  }
+
   /// A rate is a timebase read the other way round, and reading it back is
   /// where it started — *structurally*, nothing reduced on the way. The
   /// degenerate rate is the only one without the reading.
@@ -381,7 +515,7 @@ quickcheck! {
     let rate = (rate % 1000) as i64 + 1;
     let frames = rate * (secs as i64);
     Rate::hz(rate as i32).checked_frames_to_duration(frames)
-      == Some(Duration::from_secs(secs as u64))
+      == Some(StdDuration::from_secs(secs as u64))
   }
 
   /// The two frame-count rungs agree wherever the checked one answers. The
@@ -403,6 +537,14 @@ quickcheck! {
     let span = SignedDuration::new(ticks, any_timebase(tb));
     format!("{span}").parse::<SignedDuration>().map(|parsed| format!("{parsed:?}"))
       == Ok(format!("{span:?}"))
+  }
+
+  /// A duration parses back from its own rendering, on the same law — over
+  /// the whole `u64` this time, the sign gone.
+  fn a_duration_parses_back_from_its_rendering(ticks: u64, tb: (u32, u32)) -> bool {
+    let d = Duration::new(ticks, any_timebase(tb));
+    format!("{d}").parse::<Duration>().map(|parsed| format!("{parsed:?}"))
+      == Ok(format!("{d:?}"))
   }
 
   /// A rate parses back from its own rendering, on the same law.

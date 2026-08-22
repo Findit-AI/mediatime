@@ -55,6 +55,21 @@ fn signed_duration_spans_both_directions() {
 }
 
 #[test]
+fn duration_is_well_formed() {
+  let mut g = Gen::new(SIZE);
+  let mut nonzero = false;
+  for _ in 0..ITERATIONS {
+    let d = Duration::arbitrary(&mut g);
+    assert!(d.timebase().den().get() > 0);
+    assert!(d.timebase().num() >= 0);
+    nonzero |= !d.is_zero();
+  }
+  // The whole `u64` is in range, as `SignedDuration`'s whole `i64` is above —
+  // this one simply has no sign half to preserve or to exercise.
+  assert!(nonzero);
+}
+
+#[test]
 fn timerange_is_well_formed() {
   let mut g = Gen::new(SIZE);
   for _ in 0..ITERATIONS {
