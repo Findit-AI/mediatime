@@ -126,7 +126,7 @@ assert!("FPS_29_97".parse::<Timebase>().is_err());
 
 ```toml
 [dependencies]
-mediatime = "0.3"
+mediatime = "0.4"
 ```
 
 ## MSRV
